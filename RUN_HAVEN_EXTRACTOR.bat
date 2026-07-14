@@ -1,13 +1,17 @@
 @echo off
-title Haven Extractor v1.9.7
+REM The title/banner version is read live from mod\haven_extractor.py so this
+REM launcher can never drift from the mod it actually starts.
+cd /d "%~dp0"
+set "CUR_VER="
+if exist "python\python.exe" if exist "%~dp0_haven_updater_helper.py" if exist "mod\haven_extractor.py" for /f "delims=" %%V in ('""python\python.exe" "%~dp0_haven_updater_helper.py" version "mod\haven_extractor.py""') do set "CUR_VER=%%V"
+set "VER_LABEL="
+if defined CUR_VER set "VER_LABEL= v%CUR_VER%"
+title Haven Extractor%VER_LABEL%
 echo ============================================================
-echo   HAVEN EXTRACTOR v1.9.7 - Batch Mode
+echo   HAVEN EXTRACTOR%VER_LABEL% - Batch Mode
 echo   For No Man's Sky
 echo ============================================================
 echo.
-
-REM Change to the script directory
-cd /d "%~dp0"
 
 REM Check if Python is available
 if not exist "python\python.exe" (
@@ -18,7 +22,7 @@ if not exist "python\python.exe" (
 )
 
 REM Pre-flight: ensure numpy is installed (required for procedural name generation).
-REM The auto-updater (haven_updater.ps1) installs numpy too, but this catches the case
+REM The auto-updater (UPDATE_HAVEN_EXTRACTOR.bat) installs numpy too, but this catches the case
 REM where someone copied the folder from a friend or restored from a backup without
 REM ever running FIRST_TIME_SETUP.bat or UPDATE_HAVEN_EXTRACTOR.bat.
 python\python.exe -c "import numpy" >nul 2>&1

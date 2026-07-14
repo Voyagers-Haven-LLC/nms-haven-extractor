@@ -900,10 +900,51 @@ GAME_MODE_TO_DIFFICULTY_INDEX = {
 }
 
 
+def _rewrite_version_banners(data: bytes, version: str):
+    """Rewrite stale vX.Y.Z banner versions to `version` on lines mentioning
+    Haven Extractor, WITHOUT changing the file's total byte length. Length
+    matters: RUN_HAVEN_EXTRACTOR.bat is still executing while the mod runs, and
+    cmd.exe resumes a batch file by byte offset — any length shift would corrupt
+    the commands that run after the game exits. The version swap's length delta
+    is absorbed by shrinking/growing an `echo ====...` separator line.
+    Returns rewritten bytes, the original data if nothing needed changing, or
+    None if no length-safe rewrite was possible."""
+    ver_re = re.compile(rb"v\d+\.\d+\.\d+")
+    new_ver = b"v" + version.encode("ascii")
+    lines = data.splitlines(keepends=True)
+    delta = 0
+    changed = False
+    for i, line in enumerate(lines):
+        if b"haven extractor" not in line.lower():
+            continue
+        m = ver_re.search(line)
+        if not m or m.group(0) == new_ver:
+            continue
+        lines[i] = line[:m.start()] + new_ver + line[m.end():]
+        delta += len(new_ver) - (m.end() - m.start())
+        changed = True
+    if not changed:
+        return data
+    if delta:
+        for i, line in enumerate(lines):
+            m = re.match(rb"^echo (=+)(\r?\n?)$", line)
+            if not m:
+                continue
+            new_run = len(m.group(1)) - delta
+            if new_run < 20:  # keep the separator looking like a separator
+                continue
+            lines[i] = b"echo " + b"=" * new_run + m.group(2)
+            delta = 0
+            break
+        if delta:
+            return None
+    return b"".join(lines)
+
+
 class HavenExtractorMod(Mod):
     __author__ = "Voyagers Haven"
     __version__ = "1.10.6"
-    __description__ = "Releases have moved from Parker1920/Master-Haven to Voyagers-Haven-LLC/nms-haven-extractor. The updater (UPDATE_HAVEN_EXTRACTOR.bat) can only replace files inside mod/, so it can never fix its own release URL — instead the mod rewrites the sibling .bat at startup (_repoint_updater_bat) if it still points at the old repo. No extraction/gameplay changes."
+    __description__ = "Releases have moved from Parker1920/Master-Haven to Voyagers-Haven-LLC/nms-haven-extractor. The updater (UPDATE_HAVEN_EXTRACTOR.bat) can only replace files inside mod/, so it can never fix its own release URL — instead the mod rewrites the sibling .bat at startup (_repoint_updater_bat) if it still points at the old repo. Also syncs the hardcoded version banners in RUN_HAVEN_EXTRACTOR.bat / FIRST_TIME_SETUP.bat (_sync_launcher_banners) — installed launchers displayed e.g. v1.9.7 while the mod logged v1.10.6; new packages read the version live instead. No extraction/gameplay changes."
 
     # ==========================================================================
     # VALID ADJECTIVE LISTS FROM adjectives.js
@@ -1150,8 +1191,10 @@ class HavenExtractorMod(Mod):
         # Load adjective cache from disk (if exists)
         self._load_adjective_cache()
 
-        # v1.10.6: migrate installs whose updater still fetches from the old repo
+        # v1.10.6: migrate installs whose updater still fetches from the old repo,
+        # and fix stale hardcoded version banners in the sibling launcher bats
         self._repoint_updater_bat()
+        self._sync_launcher_banners()
 
         logger.info(f"Haven Extractor v{self.__version__} ready")
         logger.info("  Warp to systems → data captured automatically → Export when ready")
@@ -1175,6 +1218,31 @@ class HavenExtractorMod(Mod):
             logger.info("[UPDATER] Repointed UPDATE_HAVEN_EXTRACTOR.bat to Voyagers-Haven-LLC/nms-haven-extractor")
         except Exception as e:
             logger.warning(f"[UPDATER] Could not repoint UPDATE_HAVEN_EXTRACTOR.bat: {e}")
+
+
+    def _sync_launcher_banners(self):
+        """v1.10.6: the launcher bats used to hardcode their banner version, so
+        the console window drifted from the mod (e.g. title v1.9.7 while the mod
+        logged v1.10.6). New packages read the version live from this file's
+        __version__; installs in the wild can only be fixed from here. Uses
+        _rewrite_version_banners(), which never changes file length — the RUN
+        bat is mid-execution while the mod runs."""
+        for name in ("RUN_HAVEN_EXTRACTOR.bat", "FIRST_TIME_SETUP.bat"):
+            try:
+                bat = Path(__file__).resolve().parent.parent / name
+                if not bat.is_file():
+                    continue
+                data = bat.read_bytes()
+                fixed = _rewrite_version_banners(data, self.__version__)
+                if fixed is None:
+                    logger.warning(f"[UPDATER] Skipped banner sync in {name} (no length-safe rewrite possible)")
+                    continue
+                if fixed == data or len(fixed) != len(data):
+                    continue
+                bat.write_bytes(fixed)
+                logger.info(f"[UPDATER] Synced banner version in {name} to v{self.__version__}")
+            except Exception as e:
+                logger.warning(f"[UPDATER] Could not sync banner in {name}: {e}")
 
 
     # =========================================================================

@@ -1,11 +1,16 @@
 @echo off
-title Haven Extractor v1.9.7 - First Time Setup
+REM The title/banner version is read live from mod\haven_extractor.py so this
+REM script can never drift from the installed mod.
+cd /d "%~dp0"
+set "CUR_VER="
+if exist "python\python.exe" if exist "%~dp0_haven_updater_helper.py" if exist "mod\haven_extractor.py" for /f "delims=" %%V in ('""python\python.exe" "%~dp0_haven_updater_helper.py" version "mod\haven_extractor.py""') do set "CUR_VER=%%V"
+set "VER_LABEL="
+if defined CUR_VER set "VER_LABEL= v%CUR_VER%"
+title Haven Extractor%VER_LABEL% - First Time Setup
 echo ============================================================
-echo   HAVEN EXTRACTOR v1.9.7 - Installation Verification
+echo   HAVEN EXTRACTOR%VER_LABEL% - Installation Verification
 echo ============================================================
 echo.
-
-cd /d "%~dp0"
 
 echo [1/7] Checking Python installation...
 if not exist "python\python.exe" (
