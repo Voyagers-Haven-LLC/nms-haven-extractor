@@ -7,3 +7,6 @@ mod_dir = "."
 [gui]
 font_size = 18
 scale = 0.75
+
+[logging]
+shown = false
