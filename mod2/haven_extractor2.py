@@ -144,6 +144,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         threading.Thread(target=self._heartbeat_loop, name="HavenHeartbeat", daemon=True).start()
         threading.Thread(target=self._command_loop, name="HavenCommands", daemon=True).start()
         threading.Thread(target=self._readiness_check, name="HavenReadiness", daemon=True).start()
+        threading.Thread(target=self._settle_loop, name="HavenSettle", daemon=True).start()
 
         self._status_display = "Ready (pending hook check)"
         logger.info(f"Haven Extractor v{__version__} loaded — readiness check pending")
@@ -261,6 +262,49 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         except Exception as e:
             logger.error(f"[2.0] appview post-processing failed: {e}")
         return result
+
+    def _flush_current_system(self, force=False, reason=""):
+        """Freeze + stage the current system WITHOUT waiting for the next warp.
+
+        1.x users had the Export button as the manual freeze moment; 2.0
+        removed it, which left a single visited system stuck in memory until
+        a second warp (Parker's report, 2026-08-08). The freeze
+        (_save_current_system_to_batch) is pure — it reads only the cached
+        dicts, never game memory — so it is safe from any thread.
+        """
+        try:
+            if not self._current_system_coords or not self._captured_planets:
+                return False
+            self._save_current_system_to_batch(force_update=force)
+            self._drain_batch_to_sync()
+            if reason:
+                logger.info(f"[2.0] flushed current system ({reason})")
+            return True
+        except Exception as e:
+            logger.error(f"[2.0] flush failed: {e}")
+            return False
+
+    def _settle_loop(self):
+        """Auto-stage the current system once captures settle (~45s quiet),
+        so a single system syncs without a second warp."""
+        while not self._stop.wait(15):
+            try:
+                if self._system_saved_to_batch or not self._captured_planets:
+                    continue
+                last = self.state.last_capture_at
+                if not last:
+                    continue
+                try:
+                    age = (datetime.now(timezone.utc)
+                           - datetime.fromisoformat(last)).total_seconds()
+                except ValueError:
+                    continue
+                if age > 45:
+                    if self._flush_current_system(reason="captures settled"):
+                        self.events.emit("CAPTURE", "System settled — staged without "
+                                                    "waiting for the next warp")
+            except Exception as e:
+                logger.debug(f"settle loop: {e}")
 
     # ----------------------------------------------- live state publication
 
@@ -476,7 +520,14 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             for cmd in commands:
                 acked.append(cmd["id"])
                 name = cmd.get("command")
-                if name == "refresh_mod":
+                if name == "sync_now":
+                    if self._flush_current_system(force=True, reason="website Sync Now"):
+                        self.events.emit("SYNC", "Sync Now: current system staged")
+                    else:
+                        self.events.emit("SYNC", "Sync Now: nothing to stage yet "
+                                                 "(no captured system in memory)",
+                                         level="warning")
+                elif name == "refresh_mod":
                     self._refresh_requested = True   # applied on next APPVIEW (game thread)
                     self.events.emit("SESSION", "Refresh queued — applies next time you "
                                                 "enter game view")
