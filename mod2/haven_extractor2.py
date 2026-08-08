@@ -277,6 +277,9 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                 return False
             self._save_current_system_to_batch(force_update=force)
             self._drain_batch_to_sync()
+            # Mark saved so the settle loop doesn't re-flush every cycle
+            # (2.0.1 respammed "flushed current system" every 15s).
+            self._system_saved_to_batch = True
             if reason:
                 logger.info(f"[2.0] flushed current system ({reason})")
             return True
