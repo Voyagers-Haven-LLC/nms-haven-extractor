@@ -1,0 +1,9 @@
+[pymhf]
+exe = "NMS.exe"
+steam_gameid = 275850
+start_exe = true
+mod_dir = "."
+
+[gui]
+font_size = 18
+scale = 0.75
