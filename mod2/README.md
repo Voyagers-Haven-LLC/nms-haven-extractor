@@ -13,7 +13,7 @@ members are live on it.**
 | `sync/` | ✅ real 2.0 code | staging push, handshake+key provisioning, heartbeat, command poll — TLS verified |
 | `config/` | ✅ real 2.0 code | root-level env file (survives updates; kills the config-layering footgun) |
 | `state.py` | ✅ real 2.0 code | thread-safe snapshots + the READINESS GATE (no "Ready" with dead hooks) |
-| `capture/` | ⏳ next session | hook + memory-read transplant per the manifest — needs the game running to verify |
+| `capture/` | ✅ transplanted | hook + memory-read mixins extracted verbatim from `mod/` per the manifest (the 2026-08-08 "mod2 transplant", decision D17) |
 
 `simulate.py` drives fake captures through the REAL pipeline (everything except
 `capture/`) — it's the dev harness for the website console and the demo rig.
