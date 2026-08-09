@@ -100,17 +100,21 @@ PLANET_SIZES = {
     0: "Large", 1: "Medium", 2: "Small", 3: "Moon", 4: "Giant"
 }
 
+# Values must match haven-ui optionCatalog.json economy_types — the DB stores these verbatim.
+# cGcTradingClass: HighTech->Technology, Fusion->Advanced Materials, PowerGeneration->Power Generation
 TRADING_CLASSES = {
-    0: "Mining", 1: "HighTech", 2: "Trading", 3: "Manufacturing",
-    4: "Fusion", 5: "Scientific", 6: "PowerGeneration"
+    0: "Mining", 1: "Technology", 2: "Trading", 3: "Manufacturing",
+    4: "Advanced Materials", 5: "Scientific", 6: "Power Generation"
 }
 
+# Catalog economy_levels scale is T1-T4 (wealth enum: Poor/Average/Wealthy/Pirate)
 WEALTH_CLASSES = {
-    0: "Poor", 1: "Average", 2: "Wealthy", 3: "Pirate"
+    0: "T1", 1: "T2", 2: "T3", 3: "T4"
 }
 
+# cGcPlayerConflictData enum name for 1 is "Default" but the display/catalog term is Medium
 CONFLICT_LEVELS = {
-    0: "Low", 1: "Default", 2: "High", 3: "Pirate"
+    0: "Low", 1: "Medium", 2: "High", 3: "Pirate"
 }
 
 ALIEN_RACES = {

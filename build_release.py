@@ -25,7 +25,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent
 MOD2 = REPO / "mod2"
 
-EXCLUDE_NAMES = {"__pycache__", "logs", "sim_haven.env", "mod2_backup"}
+EXCLUDE_NAMES = {"__pycache__", "logs", "sim_haven.env", "mod2_backup", "tests"}
 
 LAUNCHER_BAT = """@echo off
 REM Haven Extractor 2.0 - control it at https://havenmap.online/extractor

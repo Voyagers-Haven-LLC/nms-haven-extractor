@@ -126,6 +126,18 @@ def build_planet_entry(
         "planet_size": captured.get('planet_size', 'Unknown'),
     }
 
+    # 2.0.3: ship the captured-then-dropped fields the backend already parses
+    # (approvals.py extraction ingest). Only send what was actually captured —
+    # never fabricate a value for an unobserved field.
+    if captured.get('is_weather_extreme'):
+        result["extreme_weather"] = True
+    if captured.get('storm_frequency'):
+        result["storm_frequency"] = captured['storm_frequency']
+    if captured.get('planet_description'):
+        result["description"] = captured['planet_description']
+    if captured.get('has_rings') is not None:
+        result["has_rings"] = bool(captured['has_rings'])
+
     for flag in _PLANET_FLAGS:
         if captured.get(flag):
             result[flag] = captured[flag]

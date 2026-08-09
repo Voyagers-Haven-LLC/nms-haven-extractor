@@ -53,7 +53,10 @@ class CaptureHooksMixin:
             # The previous system's snapshot was already consumed by the save_to_batch call
             # above (or wasn't needed). Take the new snapshot while memory is fresh; the
             # planet-capture hook will refresh it as more data populates.
+            # 2.0.3: reset the identity seed FIRST — the snapshot function adopts the new
+            # system's seed on this fresh read and rejects refreshes from any other system.
             self._current_system_snapshot = None
+            self._snapshot_identity_seed = 0
             self._snapshot_system_properties()
 
             # Coord resolution: mUniverseAddress primary, player_state secondary.

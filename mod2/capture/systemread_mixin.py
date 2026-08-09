@@ -80,19 +80,20 @@ class SystemReadMixin:
             result["dominant_lifeform"] = ALIEN_RACES.get(race_val, f"Unknown({race_val})")
             logger.debug(f"  [DIRECT] Race: {result['dominant_lifeform']} (raw: {race_val})")
 
-            # v1.6.14: Detect systems where NMS itself reports no data. Some systems
-            # are legitimately "-Data Unavailable-" for economy/conflict and "Uncharted"
-            # for lifeform — even after a full freighter scanner-room scan, the game
-            # has no values to show for these fields. The memory at these offsets still
-            # decodes to real enum values (Mining/Poor/Low/Gek) which we'd otherwise
-            # submit as fake data.
-            # The signal: INHABITING_RACE raw value outside the valid 0-6 range.
-            # Real races are 0-6 (Gek, Vy'keen, Korvax, Robots, Atlas, Diplomats,
-            # Uninhabited). Value 7+ only appears for no-data systems. When we see
-            # that, clear the co-located fields so Haven shows them as missing rather
-            # than fabricated.
-            if race_val > 6:
-                logger.debug(f"  [DIRECT] System reports no economy/conflict/lifeform data (race={race_val})")
+            # 2.0.3: cGcAlienRace runs 0-8 (Traders, Warriors, Explorers, Robots, Atlas,
+            # Diplomats, Exotics, None_, Builders). 7 = None_ is the game's own value for
+            # uninhabited systems — the DB-wide audit proved the old `> 6` guard was wiping
+            # economy/conflict/lifeform on every legitimately uninhabited system. Absence
+            # of inhabitants is real data ("None"), matching manual-upload vocabulary.
+            # Only values past the enum's end (>8) indicate a garbage/no-data read.
+            if race_val == 7:
+                logger.debug("  [DIRECT] Uninhabited system (race=None_) — recording absence")
+                result["economy_type"] = "None"
+                result["economy_strength"] = "None"
+                result["conflict_level"] = "None"
+                result["dominant_lifeform"] = "None"
+            elif race_val > 8:
+                logger.debug(f"  [DIRECT] Race value out of enum range (race={race_val}) — no-data read")
                 result["economy_type"] = "Unknown"
                 result["economy_strength"] = "Unknown"
                 result["conflict_level"] = "Unknown"
@@ -182,10 +183,10 @@ class SystemReadMixin:
         if sys_data_addr and sys_data_addr > 0x10000:
             try:
                 direct = self._read_system_data_direct(sys_data_addr)
-                # No-data signal: INHABITING_RACE raw value outside the valid 0-6 enum range.
-                # Only the direct read exposes the raw value; struct access masks it.
+                # 2.0.3: no-data signal is a race value past the real enum end (0-8);
+                # 7 = None_ is a legitimate uninhabited system, NOT a no-data marker.
                 direct_race_raw = self._read_uint32(sys_data_addr, SolarSystemDataOffsets.INHABITING_RACE)
-                if direct_race_raw > 6:
+                if direct_race_raw > 8:
                     system_no_data = True
                     logger.debug(f"  System has no economy/conflict/lifeform data (race_raw={direct_race_raw})")
 
@@ -204,17 +205,11 @@ class SystemReadMixin:
             except Exception as e:
                 logger.debug(f"  Direct system read failed: {e}")
 
-        # Fallback to NMS.py struct access if direct read didn't produce a clean value.
-        # Star color is always safe to fallback on (separate signal from scan state).
-        try:
-            if _is_unresolved(result["star_color"]) and hasattr(sys_data, 'Class'):
-                raw_star = self._safe_enum(sys_data.Class)
-                mapped = STAR_COLOR_MAP.get(raw_star, STAR_COLOR_MAP.get(raw_star.rstrip('_'), None))
-                if mapped:
-                    result["star_color"] = mapped
-                    logger.debug(f"  Star color (struct fallback): raw='{raw_star}' -> '{mapped}'")
-        except Exception:
-            pass
+        # 2.0.3: the old star-colour "fallback" read sys_data.Class — that is
+        # cGcSolarSystemClass (Default/Initial/Anomaly/GameStart), unrelated to star
+        # colour, and its near-universal value 0 ("Default") was mapped to "Yellow",
+        # silently laundering every failed/stale read into a wrong answer. Removed:
+        # an unresolved star colour now stays "Unknown" (honest absence).
 
         # Economy / conflict / lifeform struct fallbacks are SKIPPED for no-data systems —
         # the struct fields read the same memory and would fabricate plausible-looking values.
@@ -294,6 +289,25 @@ class SystemReadMixin:
                     prime_planets = pp
             props["_planets_count"] = planets_count
             props["_prime_planets"] = prime_planets
+
+            # 2.0.3: identity gate. NMS recycles this sys_data object for EVERY system it
+            # generates, and the creature-roles hook (which refreshes this snapshot) also
+            # fires for nearby systems during galaxy-map browsing. Without this check a
+            # refresh could stamp a NEIGHBOURING system's star/economy/conflict/lifeform
+            # onto the snapshot — the DB-wide audit measured exactly that (~5% of extractor
+            # system fields wrong even with correct vocab). Lock the snapshot to the seed
+            # of the system we warped into; reject refreshes from any other generation.
+            seed = props.get("system_seed") or 0
+            identity = getattr(self, "_snapshot_identity_seed", 0)
+            if identity and seed and seed != identity:
+                logger.warning(
+                    f"  [SNAPSHOT] REJECTED refresh: sys_data seed {seed:#x} != current "
+                    f"system {identity:#x} (nearby-system generation) — keeping prior snapshot"
+                )
+                return
+            if not identity and seed:
+                self._snapshot_identity_seed = seed
+
             self._current_system_snapshot = props
             logger.info(
                 f"  [SNAPSHOT] system_props: star={props.get('star_color')}, "
