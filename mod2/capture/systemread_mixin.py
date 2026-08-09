@@ -300,6 +300,10 @@ class SystemReadMixin:
             seed = props.get("system_seed") or 0
             identity = getattr(self, "_snapshot_identity_seed", 0)
             if identity and seed and seed != identity:
+                # 2.0.4: also flag the state so the capture hook can skip phantom
+                # planet captures from this foreign generation. Piggybacks on this
+                # existing, production-proven seed read — no new memory access.
+                self._foreign_generation_active = True
                 logger.warning(
                     f"  [SNAPSHOT] REJECTED refresh: sys_data seed {seed:#x} != current "
                     f"system {identity:#x} (nearby-system generation) — keeping prior snapshot"
@@ -307,6 +311,7 @@ class SystemReadMixin:
                 return
             if not identity and seed:
                 self._snapshot_identity_seed = seed
+            self._foreign_generation_active = False
 
             self._current_system_snapshot = props
             logger.info(

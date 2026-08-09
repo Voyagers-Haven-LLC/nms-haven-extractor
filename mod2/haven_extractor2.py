@@ -79,6 +79,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         self._current_system_coords = None
         self._current_system_snapshot = None
         self._snapshot_identity_seed = 0
+        self._foreign_generation_active = False
         self._translation_cache = {}
         self._translation_cache_hits = 0
         self._translation_cache_misses = 0

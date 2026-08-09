@@ -57,6 +57,7 @@ class CaptureHooksMixin:
             # system's seed on this fresh read and rejects refreshes from any other system.
             self._current_system_snapshot = None
             self._snapshot_identity_seed = 0
+            self._foreign_generation_active = False
             self._snapshot_system_properties()
 
             # Coord resolution: mUniverseAddress primary, player_state secondary.
@@ -111,6 +112,16 @@ class CaptureHooksMixin:
         # is the one in memory (we're inside its planet generation). The first snapshot in
         # on_system_generate may have fired before economy/conflict/lifeform populated.
         self._snapshot_system_properties()
+
+        # 2.0.4: the snapshot refresh above compares the live sys_data seed against the
+        # warped-into system's seed (its existing, production-proven read). When it
+        # detected a NEIGHBOURING system's generation (load-time discovery / galaxy-map
+        # browsing), skip planet capture for this fire — phantoms never enter the list
+        # (e.g. 6 planets shown in a 3-planet system). No new memory reads here; the
+        # settle-time phantom filter remains as backstop.
+        if getattr(self, "_foreign_generation_active", False):
+            logger.debug("  [CAPTURE] skipped foreign-system generation fire")
+            return
 
         # v1.6.11: Hook-fire limit enforced below per unique planet name to handle
         # the case where the hook fires for the same planet twice (was filling the
