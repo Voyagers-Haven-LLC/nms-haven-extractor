@@ -13,7 +13,7 @@ import urllib.request
 
 logger = logging.getLogger('haven_extractor.sync')
 
-USER_AGENT_VERSION = '2.0.0-dev'
+USER_AGENT_VERSION = '2.1.0-dev'  # stamped by build_release.py alongside __version__
 
 
 class SyncError(Exception):

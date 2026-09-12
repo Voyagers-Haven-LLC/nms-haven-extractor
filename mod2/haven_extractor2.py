@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pymhf import Mod
 import nmspy.data.types as nms
-from nmspy.decorators import on_state_change
+from nmspy.decorators import on_state_change, on_fully_booted
 
 from capture.hooks_mixin import CaptureHooksMixin
 from capture.systemread_mixin import SystemReadMixin
@@ -36,6 +36,9 @@ from payload.payload_mixin import PayloadMixin
 from resolve.resolve_mixin import ResolveMixin
 
 from state import ExtractorState
+from nmspy_pin import framework_status
+from readiness import registry_names, unbound_required_hooks
+from payload.sanity import payload_sanity_problems, payload_soft_warnings
 from telemetry.events import EventBus
 from config.env_file import load_env, save_env
 from sync.client import HavenSyncClient, SyncError
@@ -43,7 +46,7 @@ from api_local.server import LocalApi
 
 logger = logging.getLogger("haven_extractor2")
 
-__version__ = "2.0.0-dev"
+__version__ = "2.1.0-dev"
 
 # Required memory hooks — the readiness gate checks these against pyMHF's
 # registry after load (June 16 2026: 'Unable to find offset for
@@ -112,13 +115,32 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         self._journal_path = self._output_dir / "staged_queue_v2.jsonl"
         self._journal_lock = threading.Lock()
         self._stop = threading.Event()
+        self._readiness_lock = threading.Lock()
+        self._readiness_reported = False
+        self._refused_glyphs = set()
 
         # deps health (no runtime pip installs in 2.0 — this surfaces instead)
-        self.state.update(deps_ok=NMS_NAMEGEN_AVAILABLE,
-                          deps_detail={"nms_namegen": NMS_NAMEGEN_AVAILABLE})
+        # 2.1.0: the framework pin is part of deps. Every struct read goes through
+        # nmspy's generated classes, so "installed nmspy == the build this mod was
+        # verified against" IS correctness. A mismatch holds all uploads.
+        self._framework_ok, self._framework_detail = framework_status()
+        deps_detail = {"nms_namegen": NMS_NAMEGEN_AVAILABLE}
+        deps_detail.update(self._framework_detail)
+        self.state.update(deps_ok=(NMS_NAMEGEN_AVAILABLE and self._framework_ok),
+                          deps_detail=deps_detail)
         if not NMS_NAMEGEN_AVAILABLE:
             self.events.emit("HEALTH", "numpy/nms_namegen unavailable — procedural "
                                        "names degrade to System_<glyph>", level="error")
+        if not self._framework_ok:
+            self.events.emit(
+                "HEALTH",
+                f"FRAMEWORK MISMATCH — nmspy {self._framework_detail.get('nmspy')} installed, "
+                f"this extractor needs {self._framework_detail.get('nmspy_pin')} "
+                f"(pymhf {self._framework_detail.get('pymhf')} / needs "
+                f"{self._framework_detail.get('pymhf_pin')}). Captures are HELD, not "
+                f"uploaded. Close the game and start it with RUN_HAVEN_EXTRACTOR.bat — "
+                f"the launcher installs the right version.",
+                level="error", coalesce_key="framework-mismatch")
 
         self.events.emit("SESSION", f"Haven Extractor v{__version__} loading")
         self._load_adjective_cache()
@@ -182,22 +204,28 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
 
     # ------------------------------------------------------- readiness gate
 
-    def _readiness_check(self):
-        """Verify hook binding ~15s after load (bind happens post-init).
-        The gate: no 'READY' unless every required hook actually bound (D16)."""
-        time.sleep(15)
-        bound, failed = 0, []
+    def _run_readiness_check(self, trigger: str):
+        """The gate (D16): no READY unless every required hook is in pyMHF's
+        registry AND the framework matches the pin.
+
+        2.1.0: membership in ``hook_manager.hooks`` is the truth. The 2.0.x gate
+        read ``failed_hooks``, which pyMHF never fills for an unresolved pattern
+        (it logs 'Unable to find offset for X' and returns), so a game update left
+        the mod reporting READY with dead hooks. See readiness.py.
+        """
+        names = None
         try:
             from pymhf.core.hooking import hook_manager
-            failed_names = set(getattr(hook_manager, "failed_hooks", {}) or {})
-            for name in REQUIRED_HOOKS:
-                if any(name in f for f in failed_names):
-                    failed.append(name)
-                else:
-                    bound += 1
+            names = registry_names(hook_manager)
         except Exception as e:
             logger.warning(f"readiness check could not read hook registry: {e}")
+        failed = unbound_required_hooks(names, REQUIRED_HOOKS)
+        if failed is None:
+            failed = []
             bound = len(REQUIRED_HOOKS)  # can't disprove; last-fire watchdog still covers us
+            logger.warning("readiness: hook registry unreadable — assuming bound")
+        else:
+            bound = len(REQUIRED_HOOKS) - len(failed)
         # Count only OUR mod against expectation — pyMHF's registry includes
         # its own internal mods, which inflated the count (3/1 on first run).
         mods_loaded = 1
@@ -210,16 +238,43 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             pass
         self.state.update(hooks_bound=bound, hooks_expected=len(REQUIRED_HOOKS),
                           mods_loaded=mods_loaded, mods_expected=1, game_running=True)
+        with self._readiness_lock:
+            first_report = not self._readiness_reported
+            self._readiness_reported = True
         if failed:
             self._status_display = f"BROKEN: {failed[0]} not bound"
             self.events.emit("HEALTH",
                              f"MOD BROKEN — hook(s) failed to bind: {', '.join(failed)}. "
-                             f"A game update likely shifted offsets; captures will NOT work "
-                             f"until the extractor is updated.", level="error")
+                             f"The game build no longer matches this extractor; captures "
+                             f"will NOT work until the extractor is updated "
+                             f"(check: {trigger}).", level="error",
+                             coalesce_key="hooks-broken")
+        elif not self._framework_ok:
+            self._status_display = "BROKEN: framework mismatch"
+            self.events.emit("HEALTH",
+                             f"NOT READY — hooks {bound}/{len(REQUIRED_HOOKS)} bound but "
+                             f"nmspy {self._framework_detail.get('nmspy')} != pin "
+                             f"{self._framework_detail.get('nmspy_pin')}; uploads held "
+                             f"(check: {trigger}).", level="error",
+                             coalesce_key="framework-mismatch")
         else:
             self._status_display = "Ready"
-            self.events.emit("SESSION", f"READY — hooks {bound}/{len(REQUIRED_HOOKS)} bound, "
-                                        f"deps {'ok' if self.state.deps_ok else 'MISSING'}")
+            if first_report or trigger == "fully_booted":
+                self.events.emit("SESSION",
+                                 f"READY — hooks {bound}/{len(REQUIRED_HOOKS)} bound, "
+                                 f"nmspy {self._framework_detail.get('nmspy')} == pin, "
+                                 f"deps {'ok' if self.state.deps_ok else 'MISSING'} "
+                                 f"(check: {trigger})")
+
+    def _readiness_check(self):
+        """Fallback timer: if the game never reaches the mode selector while we
+        are watching (hot reload, mod loaded mid-session), still verify ~15s after
+        load. The primary trigger is @on_fully_booted below."""
+        time.sleep(15)
+        with self._readiness_lock:
+            already = self._readiness_reported
+        if not already:
+            self._run_readiness_check("timer")
 
     # ------------------------------------------------------- decorated hooks
 
@@ -248,6 +303,16 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         except Exception as e:
             logger.debug(f"[2.0] publish failed: {e}")
         return result
+
+    @on_fully_booted
+    def on_fully_booted(self):
+        """pyMHF's MODESELECTOR trigger: hook registration is final by now, so
+        this is the authoritative moment to verify binding (2.1.0)."""
+        self._hook_last_fire["fully_booted"] = time.time()
+        try:
+            self._run_readiness_check("fully_booted")
+        except Exception as e:
+            logger.error(f"[2.1] readiness check failed: {e}")
 
     @on_state_change("APPVIEW")
     def on_appview(self):
@@ -385,6 +450,41 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                                  f"and back in to fix, it will stage automatically.",
                                  level="warning", coalesce_key=f"held-{glyph}")
                 continue
+            # 2.1.0 framework hold: with a mismatched nmspy every struct read is
+            # suspect, so nothing leaves this machine until the launcher fixes it.
+            if not self._framework_ok:
+                self.events.emit("HEALTH",
+                                 f"HELD: {entry.get('system_name') or glyph} not staged — "
+                                 f"framework mismatch (nmspy "
+                                 f"{self._framework_detail.get('nmspy')} != "
+                                 f"{self._framework_detail.get('nmspy_pin')}). Restart via "
+                                 f"RUN_HAVEN_EXTRACTOR.bat to update.",
+                                 level="error", coalesce_key="held-framework")
+                continue
+            # 2.1.0 upload sanity gate: refuse implausible captures LOUDLY instead of
+            # uploading plausible garbage (the whole point of dropping hand offsets).
+            problems = payload_sanity_problems(entry)
+            if problems:
+                if glyph not in self._refused_glyphs:
+                    self._refused_glyphs.add(glyph)
+                    self.state.update(refused_count=len(self._refused_glyphs))
+                    logger.error(f"[SANITY] REFUSED {glyph}: {problems}")
+                    self.events.emit("HEALTH",
+                                     f"REFUSED upload of {entry.get('system_name') or glyph}: "
+                                     f"{'; '.join(problems[:4])}"
+                                     f"{' …' if len(problems) > 4 else ''}. This looks like "
+                                     f"a struct misread (game/framework layout changed) — "
+                                     f"update the extractor via RUN_HAVEN_EXTRACTOR.bat.",
+                                     level="error", coalesce_key=f"refused-{glyph}")
+                continue
+            soft = payload_soft_warnings(entry)
+            if soft:
+                self.events.emit("CAPTURE",
+                                 f"{entry.get('system_name') or glyph}: "
+                                 f"{len(soft)} planet field(s) read as raw enum "
+                                 f"({soft[0]}{' …' if len(soft) > 1 else ''}) — staged, "
+                                 f"flagged for review.",
+                                 level="warning", coalesce_key=f"soft-{glyph}")
             payload = dict(entry)
             payload["game_mode"] = game_mode
             payload["reality"] = reality

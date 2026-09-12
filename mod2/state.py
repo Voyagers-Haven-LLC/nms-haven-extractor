@@ -23,7 +23,7 @@ class ExtractorState:
         # Health (populated by capture/ at load; by the simulator in dev)
         self.mods_expected = 1
         self.mods_loaded = 0
-        self.hooks_expected = 4
+        self.hooks_expected = 3   # len(REQUIRED_HOOKS) in haven_extractor2 (was 4 — a stale count)
         self.hooks_bound = 0
         self.deps_ok = True
         self.deps_detail = {}
@@ -38,6 +38,7 @@ class ExtractorState:
         self.current_staged = False
         # Batch / sync
         self.batch_count = 0
+        self.refused_count = 0          # 2.1.0: captures the sanity gate refused to stage
         self.last_capture_at = None
         self.last_sync_at = None
 
@@ -93,6 +94,7 @@ class ExtractorState:
                 'game_running': self.game_running,
                 'identity': {'username': self.username, 'linked': self.linked},
                 'batch_count': self.batch_count,
+                'refused_count': self.refused_count,
                 'last_capture_at': self.last_capture_at,
                 'last_sync_at': self.last_sync_at,
             }

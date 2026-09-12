@@ -300,16 +300,17 @@ class CaptureHooksMixin:
                 logger.debug(f"    [HINTS] ExtraResourceHints read failed: {e}")
 
             # v1.4.6: Direct memory read fallback for ExtraResourceHints
-            # ExtraResourceHints is at offset 0x3310 in cGcPlanetData
             # cTkDynamicArray layout: pointer(8) + count(4) + capacity(4) = 16 bytes
             # cGcPlanetDataResourceHint: Hint TkID(16) + Icon TkID(16) = 32 bytes per element
+            # 2.1.0: the field offset comes from the framework's generated struct
+            # (was a hardcoded 0x3310 that Cosmos moved to 0x33F0).
             if not extra_resource_hints and planet_data_addr:
                 try:
-                    hints_offset = 0x3310  # Confirmed offset from nmspy exported_types
+                    hints_offset = nmse.cGcPlanetData.ExtraResourceHints.offset
                     arr_ptr = self._read_uint64(planet_data_addr, hints_offset)
                     arr_count = self._read_uint32(planet_data_addr, hints_offset + 8)
                     if arr_ptr and arr_ptr > 0x10000 and 0 < arr_count <= 10:
-                        logger.info(f"    [HINTS-DIRECT] Found {arr_count} hints at 0x3310")
+                        logger.info(f"    [HINTS-DIRECT] Found {arr_count} hints at {hints_offset:#x}")
                         for hi in range(arr_count):
                             elem_addr = arr_ptr + (hi * 32)  # 32 bytes per element
                             hint_str = self._read_string(elem_addr, 0, max_len=16)

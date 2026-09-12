@@ -1,53 +1,19 @@
-"""AUTO-TRANSPLANTED from mod/haven_extractor.py v1.10.6 per the verified
-live-code manifest (haven-ui/docs/EXTRACTOR_2_0.md §7). Source line ranges
-noted per block. Bodies are verbatim; [2.0] marks the few deliberate edits.
+"""Display-label tables for the capture layer. NO MEMORY OFFSETS LIVE HERE.
+
+2.1.0: the four hand-maintained offset classes (SolarSystemDataOffsets,
+TradingDataOffsets, ConflictDataOffsets, PlanetGenInputOffsets) are gone. Every
+struct read now goes through NMSpy's generated classes
+(nmspy.data.exported_types / nmspy.data.types), which are regenerated per game
+build. Cosmos (2026-09-09) moved cGcSolarSystemData by +0x2E0 and the hand
+offsets kept returning plausible garbage for four days without a single error
+— that is the failure mode this change removes. The pinned framework version
+lives in mod2/nmspy_pin.py.
+
+What stays: the integer -> display label tables below. They translate the raw
+enum values into the vocabulary haven-ui's option catalog stores, and the
+upload sanity gate (payload/sanity.py) uses them as the set of plausible
+values. Raw enums themselves come from nmspy.data.enums.
 """
-
-# ---- source lines 375-529 (+880-900 game-mode maps) ----
-# =============================================================================
-# MEMORY OFFSET CONSTANTS (from MBINCompiler / NMS 4.13 PDB)
-# These may need adjustment for different game versions
-# =============================================================================
-
-# GcSolarSystemData offsets (total size ~0x1F50)
-class SolarSystemDataOffsets:
-    """Offsets within cGcSolarSystemData struct."""
-    PLANETS_COUNT = 0x2264        # int - total planet + moon count
-    PRIME_PLANETS = 0x2268        # int - non-moon planet count
-    STAR_CLASS = 0x224C           # GcSolarSystemClass enum
-    STAR_TYPE = 0x2270            # GcGalaxyStarTypes enum
-    NAME = 0x2274                 # cTkFixedString0x80 - system name (128 bytes)
-    TRADING_DATA = 0x2240         # GcPlanetTradingData struct
-    CONFLICT_DATA = 0x2250        # GcPlayerConflictData struct
-    INHABITING_RACE = 0x2254      # GcAlienRace enum
-    SEED = 0x21A0                 # GcSeed struct
-    PLANET_GEN_INPUTS = 0x1EA0    # GcPlanetGenerationInputData[6] array
-
-# GcPlanetTradingData offsets (nested at SolarSystemData + 0x2240)
-class TradingDataOffsets:
-    """Offsets within GcPlanetTradingData struct."""
-    TRADING_CLASS = 0x0           # Economy type enum
-    WEALTH_CLASS = 0x4            # Economy strength enum
-
-# GcPlayerConflictData offsets (nested at SolarSystemData + 0x2250)
-class ConflictDataOffsets:
-    """Offsets within GcPlayerConflictData struct."""
-    CONFLICT_LEVEL = 0x0          # Conflict level enum
-
-# GcPlanetGenerationInputData offsets (size 0x53 per planet = 83 bytes)
-class PlanetGenInputOffsets:
-    """Offsets within GcPlanetGenerationInputData struct."""
-    STRUCT_SIZE = 0x58            # Size of each planet gen input entry (88 bytes; array spans 0x1EA0..0x2160 = 0x2C0 / 8 = 0x58 per nmspy cGcSolarSystemData). Prior 0x53 mis-strided slots 1-5.
-    COMMON_SUBSTANCE = 0x00       # NMSString0x10
-    RARE_SUBSTANCE = 0x10         # NMSString0x10
-    SEED = 0x20                   # GcSeed
-    BIOME = 0x30                  # GcBiomeType enum (4 bytes)
-    BIOME_SUBTYPE = 0x34          # GcBiomeSubType enum
-    PLANET_CLASS = 0x38           # GcPlanetClass enum
-    PLANET_INDEX = 0x3C           # int
-    PLANET_SIZE = 0x40            # GcPlanetSize enum (4 bytes)
-    REALITY_INDEX = 0x44          # int (galaxy index)
-    STAR_TYPE = 0x48              # GcGalaxyStarTypes enum
 
 # =============================================================================
 # ENUM VALUE MAPPINGS (from MBINCompiler)

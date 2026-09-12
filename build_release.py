@@ -12,8 +12,11 @@ Usage:
        [--python-dir "C:\\Master-Haven\\NMS-Haven-Extractor\\dist\\HavenExtractor\\python"]
        [--out dist_out]
 
-The version stamps mod2/haven_extractor2.py's __version__ inside the zips
-(the working tree is left untouched).
+The version stamps mod2/haven_extractor2.py's __version__ AND
+mod2/sync/client.py's USER_AGENT_VERSION inside the zips (the working tree is
+left untouched). 2.1.0: a Full zip is refused unless the embedded python/ carries
+exactly the nmspy pinned in mod2/nmspy_pin.py — the framework is the
+game-compat surface now, so a Full zip with the wrong one is a broken release.
 """
 
 import argparse
@@ -71,12 +74,33 @@ def iter_mod2_files():
         yield path, rel
 
 
+def read_pin(name: str = "NMSPY_PIN") -> str:
+    text = (MOD2 / "nmspy_pin.py").read_text(encoding="utf-8")
+    m = re.search(rf'^{name}\s*=\s*["\']([^"\']+)["\']', text, re.M)
+    if not m:
+        raise SystemExit(f"{name} not found in mod2/nmspy_pin.py")
+    return m.group(1)
+
+
+def embedded_dist_version(python_dir: Path, dist: str):
+    """Version of `dist` installed in the embedded python (from its dist-info dir)."""
+    site = python_dir / "Lib" / "site-packages"
+    for p in site.glob("*.dist-info"):
+        stem = p.name[: -len(".dist-info")]
+        pkg, _, ver = stem.rpartition("-")
+        if pkg.lower().replace("_", "-") == dist.lower():
+            return ver
+    return None
+
+
 def stamped(path: Path, version: str) -> bytes:
     data = path.read_bytes()
     if path.name == "haven_extractor2.py":
         text = data.decode("utf-8")
         text = re.sub(r"__version__\s*=\s*['\"][^'\"]+['\"]",
                       f'__version__ = "{version}"', text, count=1)
+        text = re.sub(r"USER_AGENT_VERSION\s*=\s*['\"][^'\"]+['\"]",
+                      f"USER_AGENT_VERSION = '{version}'", text, count=1)
         data = text.encode("utf-8")
     return data
 
@@ -100,6 +124,18 @@ def build_mod_zip(version: str, out: Path) -> Path:
 def build_full_zip(version: str, out: Path, python_dir: Path) -> Path:
     if not (python_dir / "python.exe").exists():
         raise SystemExit(f"embedded python not found at {python_dir}")
+    pin = read_pin("NMSPY_PIN")
+    pymhf_pin = read_pin("PYMHF_PIN")
+    have = embedded_dist_version(python_dir, "nmspy")
+    have_pymhf = embedded_dist_version(python_dir, "pymhf")
+    if have != pin or have_pymhf != pymhf_pin:
+        raise SystemExit(
+            f"embedded python has nmspy {have} / pymhf {have_pymhf}, but mod2/nmspy_pin.py "
+            f"pins nmspy {pin} / pymhf {pymhf_pin}. Refusing to build a Full zip that "
+            f"ships the wrong framework. Fix with:\n"
+            f'  "{python_dir / "python.exe"}" -m pip install --upgrade '
+            f"nmspy=={pin} pymhf=={pymhf_pin}"
+        )
     target = out / f"HavenExtractor-Full-v{version}.zip"
     root = "HavenExtractor"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -138,6 +174,8 @@ def main():
         print(f"built {full_zip.name}  ({full_zip.stat().st_size // (1 << 20)} MB)")
         print(f"  sha256 {sha256(full_zip)}")
 
+    print(f"\nframework pin: nmspy {read_pin('NMSPY_PIN')} / pymhf {read_pin('PYMHF_PIN')} "
+          f"(launcher installs it on players' machines)")
     print("\nRelease checklist:")
     mod_path = str(out / f"HavenExtractor-mod2-v{args.version}.zip")
     full_path = "" if args.mod_only else " " + str(out / f"HavenExtractor-Full-v{args.version}.zip")

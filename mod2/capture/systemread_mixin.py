@@ -1,6 +1,10 @@
 """AUTO-TRANSPLANTED from mod/haven_extractor.py v1.10.6 per the verified
 live-code manifest (haven-ui/docs/EXTRACTOR_2_0.md §7). Source line ranges
 noted per block. Bodies are verbatim; [2.0] marks the few deliberate edits.
+
+2.1.0: the system-level read no longer touches raw offsets. It reads the
+generated struct (nmse.cGcSolarSystemData) field by field, so a game update
+is fixed by bumping mod2/nmspy_pin.py, not by re-deriving numbers.
 """
 
 import json
@@ -29,9 +33,35 @@ from capture.offsets import *  # noqa: F401,F403
 class SystemReadMixin:
     """System-level property reads + snapshot + gamemode detection (REVIVED — dead code in 1.x)."""
 
-    # ---- source lines 1433-1506: _read_system_data_direct ----
-    def _read_system_data_direct(self, sys_data_addr: int) -> dict:
-        """Read solar system data using direct memory offsets."""
+    # ---- 2.1.0: struct-based system read (replaces the raw-offset _read_system_data_direct) ----
+    @staticmethod
+    def _enum_raw(val) -> int:
+        """Raw integer behind a pymhf c_enum32 (``.value``), a plain int, or -1."""
+        try:
+            return int(getattr(val, "value", val))
+        except Exception:
+            return -1
+
+    @staticmethod
+    def _fixed_string(val, max_len: int = 127) -> str:
+        """cTkFixedString -> clean printable str (stops at NUL, strips junk)."""
+        try:
+            text = str(val) if val is not None else ""
+        except Exception:
+            return ""
+        text = text.split("\x00", 1)[0]
+        text = "".join(c for c in text if c.isprintable()).strip()
+        return text[:max_len]
+
+    def _read_system_data_from_struct(self, sd) -> dict:
+        """Read system properties from a mapped nmse.cGcSolarSystemData.
+
+        Field names are the framework's own (Name, Planets, PrimePlanets, StarType,
+        TradingData.TradingClass/WealthClass, ConflictData, InhabitingRace, Seed).
+        Enum fields are pymhf c_enum32 wrappers: ``.value`` is the raw integer,
+        which the display tables translate; an out-of-range raw value renders as
+        ``Unknown(<raw>)`` and is what the upload sanity gate refuses.
+        """
         result = {
             "system_name": "",
             "star_color": "Unknown",
@@ -42,43 +72,44 @@ class SystemReadMixin:
             "system_seed": 0,
             "planet_count": 0,
             "prime_planets": 0,
+            "_race_raw": -1,
         }
+        if sd is None:
+            return result
 
         try:
-            # Read system name (128-byte fixed string at offset 0x2274)
-            system_name = self._read_string(sys_data_addr, SolarSystemDataOffsets.NAME, max_len=128)
+            system_name = self._fixed_string(getattr(sd, "Name", None))
             if system_name:
                 result["system_name"] = system_name
-                logger.debug(f"  [DIRECT] System name: {system_name}")
+                logger.debug(f"  [STRUCT] System name: {system_name}")
 
-            # Read planet counts
-            result["planet_count"] = self._read_int32(sys_data_addr, SolarSystemDataOffsets.PLANETS_COUNT)
-            result["prime_planets"] = self._read_int32(sys_data_addr, SolarSystemDataOffsets.PRIME_PLANETS)
-            logger.debug(f"  [DIRECT] Planet count: {result['planet_count']}, Prime: {result['prime_planets']}")
+            result["planet_count"] = int(sd.Planets)
+            result["prime_planets"] = int(sd.PrimePlanets)
+            logger.debug(f"  [STRUCT] Planet count: {result['planet_count']}, Prime: {result['prime_planets']}")
 
-            # Read star type (now called star_color)
-            star_type_val = self._read_uint32(sys_data_addr, SolarSystemDataOffsets.STAR_TYPE)
+            star_type_val = self._enum_raw(sd.StarType)
             result["star_color"] = STAR_TYPES.get(star_type_val, f"Unknown({star_type_val})")
-            logger.debug(f"  [DIRECT] Star color: {result['star_color']} (raw: {star_type_val})")
+            logger.debug(f"  [STRUCT] Star color: {result['star_color']} (raw: {star_type_val})")
 
-            # Read trading data (economy)
-            trading_addr = sys_data_addr + SolarSystemDataOffsets.TRADING_DATA
-            trading_class = self._read_uint32(trading_addr, TradingDataOffsets.TRADING_CLASS)
-            wealth_class = self._read_uint32(trading_addr, TradingDataOffsets.WEALTH_CLASS)
+            trading_class = self._enum_raw(sd.TradingData.TradingClass)
+            wealth_class = self._enum_raw(sd.TradingData.WealthClass)
             result["economy_type"] = TRADING_CLASSES.get(trading_class, f"Unknown({trading_class})")
             result["economy_strength"] = WEALTH_CLASSES.get(wealth_class, f"Unknown({wealth_class})")
-            logger.debug(f"  [DIRECT] Economy: {result['economy_type']} / {result['economy_strength']} (raw: {trading_class}/{wealth_class})")
+            logger.debug(f"  [STRUCT] Economy: {result['economy_type']} / {result['economy_strength']} (raw: {trading_class}/{wealth_class})")
 
-            # Read conflict data
-            conflict_addr = sys_data_addr + SolarSystemDataOffsets.CONFLICT_DATA
-            conflict_val = self._read_uint32(conflict_addr, ConflictDataOffsets.CONFLICT_LEVEL)
+            conflict_val = self._enum_raw(sd.ConflictData)
             result["conflict_level"] = CONFLICT_LEVELS.get(conflict_val, f"Unknown({conflict_val})")
-            logger.debug(f"  [DIRECT] Conflict: {result['conflict_level']} (raw: {conflict_val})")
+            logger.debug(f"  [STRUCT] Conflict: {result['conflict_level']} (raw: {conflict_val})")
 
-            # Read dominant race
-            race_val = self._read_uint32(sys_data_addr, SolarSystemDataOffsets.INHABITING_RACE)
+            race_val = self._enum_raw(sd.InhabitingRace)
+            result["_race_raw"] = race_val
             result["dominant_lifeform"] = ALIEN_RACES.get(race_val, f"Unknown({race_val})")
-            logger.debug(f"  [DIRECT] Race: {result['dominant_lifeform']} (raw: {race_val})")
+            logger.debug(f"  [STRUCT] Race: {result['dominant_lifeform']} (raw: {race_val})")
+
+            try:
+                result["system_seed"] = int(sd.Seed.Seed)
+            except Exception:
+                pass
 
             # 2.0.3: cGcAlienRace runs 0-8 (Traders, Warriors, Explorers, Robots, Atlas,
             # Diplomats, Exotics, None_, Builders). 7 = None_ is the game's own value for
@@ -87,24 +118,34 @@ class SystemReadMixin:
             # of inhabitants is real data ("None"), matching manual-upload vocabulary.
             # Only values past the enum's end (>8) indicate a garbage/no-data read.
             if race_val == 7:
-                logger.debug("  [DIRECT] Uninhabited system (race=None_) — recording absence")
+                logger.debug("  [STRUCT] Uninhabited system (race=None_) — recording absence")
                 result["economy_type"] = "None"
                 result["economy_strength"] = "None"
                 result["conflict_level"] = "None"
                 result["dominant_lifeform"] = "None"
-            elif race_val > 8:
-                logger.debug(f"  [DIRECT] Race value out of enum range (race={race_val}) — no-data read")
+            elif race_val > 8 or race_val < 0:
+                logger.debug(f"  [STRUCT] Race value out of enum range (race={race_val}) — no-data read")
                 result["economy_type"] = "Unknown"
                 result["economy_strength"] = "Unknown"
                 result["conflict_level"] = "Unknown"
                 result["dominant_lifeform"] = "Unknown"
 
         except Exception as e:
-            logger.error(f"Direct system data read failed: {e}")
+            logger.error(f"Struct system data read failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
         return result
+
+    def _read_system_data_direct(self, sys_data_addr: int) -> dict:
+        """Address-based entry point kept for callers that only hold an address:
+        maps the framework struct at that address and reads it. No hand offsets."""
+        try:
+            sd = map_struct(sys_data_addr, nmse.cGcSolarSystemData)
+        except Exception as e:
+            logger.debug(f"  [STRUCT] map_struct failed at 0x{sys_data_addr:X}: {e}")
+            sd = None
+        return self._read_system_data_from_struct(sd)
 
     # ---- source lines 3207-3405: _extract_system_properties + _snapshot_system_properties ----
     def _extract_system_properties(self, sys_data) -> dict:
@@ -182,11 +223,12 @@ class SystemReadMixin:
 
         if sys_data_addr and sys_data_addr > 0x10000:
             try:
-                direct = self._read_system_data_direct(sys_data_addr)
+                direct = self._read_system_data_from_struct(sys_data)
                 # 2.0.3: no-data signal is a race value past the real enum end (0-8);
                 # 7 = None_ is a legitimate uninhabited system, NOT a no-data marker.
-                direct_race_raw = self._read_uint32(sys_data_addr, SolarSystemDataOffsets.INHABITING_RACE)
-                if direct_race_raw > 8:
+                # 2.1.0: the raw race rides along from the same struct read.
+                direct_race_raw = direct.get("_race_raw", -1)
+                if direct_race_raw > 8 or direct_race_raw < 0:
                     system_no_data = True
                     logger.debug(f"  System has no economy/conflict/lifeform data (race_raw={direct_race_raw})")
 
@@ -277,16 +319,18 @@ class SystemReadMixin:
             props = self._extract_system_properties(sys_data)
             # Also snapshot planet count, prime planets, and the fresh sys_data_addr so
             # the batch save can use the same direct-memory codepath without re-resolving.
-            sys_data_addr = get_addressof(sys_data)
             planets_count = None
             prime_planets = None
-            if sys_data_addr and sys_data_addr > 0x10000:
-                pc = self._read_int32(sys_data_addr, SolarSystemDataOffsets.PLANETS_COUNT)
-                pp = self._read_int32(sys_data_addr, SolarSystemDataOffsets.PRIME_PLANETS)
+            try:
+                # 2.1.0: counts come from the generated struct fields, not offsets.
+                pc = int(sys_data.Planets)
+                pp = int(sys_data.PrimePlanets)
                 if 0 < pc <= 6:
                     planets_count = pc
                 if 0 <= pp <= 6:
                     prime_planets = pp
+            except Exception as e:
+                logger.debug(f"  [SNAPSHOT] planet counts unavailable: {e}")
             props["_planets_count"] = planets_count
             props["_prime_planets"] = prime_planets
 

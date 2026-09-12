@@ -1,6 +1,6 @@
 [project]
 name = "nms-haven-extractor"
-version = "1.10.6"
+version = "2.1.0"
 description = "Extract planet and system data from No Man's Sky for Voyagers Haven"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -9,7 +9,11 @@ authors = [
     {name = "Voyagers Haven", email = "haven@example.com"}
 ]
 dependencies = [
-    "nmspy>=0.1.0",
+    # Exact pins on purpose: nmspy's version IS the NMS build id and its generated
+    # structs are only right for that build. mod2/nmspy_pin.py is the runtime copy
+    # of these two numbers; keep them identical.
+    "nmspy==178994.0",
+    "pymhf==0.2.4",
     "requests>=2.28.0",
     "numpy>=2.0",
 ]

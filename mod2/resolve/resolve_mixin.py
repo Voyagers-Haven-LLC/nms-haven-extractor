@@ -87,27 +87,29 @@ class ResolveMixin:
     def _read_galaxy_from_solar_system_direct(self) -> Optional[int]:
         """Galaxy candidate 3: the solar-system-data PlanetGenerationInputs[0] scratch copy.
 
-        Raw read of sys_data + 0x1EA0 (PLANET_GEN_INPUTS) + 0x44 (REALITY_INDEX), slot 0.
-        Offsets are nmspy-confirmed (PlanetGenerationInputs @0x1EA0, RealityIndex @0x44).
-        This is a generation-input scratch buffer; historically it has read 0 even in
-        non-Euclid galaxies, which is exactly why it is now only ONE of several voting
-        candidates and never authoritative on its own. Returns None on failure/out-of-range
-        (0 is returned as 0 — a positively-read value).
+        2.1.0: read through the generated struct — sys_data.PlanetGenerationInputs[0]
+        .RealityIndex (nmse.cGcSolarSystemData / cGcPlanetGenerationInputData) — no
+        hand offsets (the old 0x1EA0 moved to 0x2180 in Cosmos). Voting semantics are
+        UNCHANGED: this is a generation-input scratch buffer that has historically
+        read 0 even in non-Euclid galaxies, which is exactly why it is only ONE of
+        several candidates and never authoritative on its own. Returns None on
+        failure/out-of-range (0 is returned as 0 — a positively-read value).
         """
-        sys_data_addr = None
+        sys_data = None
         try:
             if self._cached_solar_system is not None:
                 sys_data = self._cached_solar_system.mSolarSystemData
-                sys_data_addr = get_addressof(sys_data)
         except Exception as e:
-            logger.debug(f"  [GALAXY] sysdata: failed to get addr: {e}")
-        if not sys_data_addr:
-            sys_data_addr = self._cached_sys_data_addr
-        if not sys_data_addr:
+            logger.debug(f"  [GALAXY] sysdata: failed to get struct: {e}")
+        if sys_data is None and self._cached_sys_data_addr:
+            try:
+                sys_data = map_struct(self._cached_sys_data_addr, nmse.cGcSolarSystemData)
+            except Exception as e:
+                logger.debug(f"  [GALAXY] sysdata: map_struct failed: {e}")
+        if sys_data is None:
             return None
         try:
-            reality_addr_offset = SolarSystemDataOffsets.PLANET_GEN_INPUTS + PlanetGenInputOffsets.REALITY_INDEX
-            raw_reality = self._read_int32(sys_data_addr, reality_addr_offset)
+            raw_reality = int(sys_data.PlanetGenerationInputs[0].RealityIndex)
             return self._galaxy_in_range(raw_reality)
         except Exception as e:
             logger.debug(f"  [GALAXY] sysdata read failed: {e}")
