@@ -22,8 +22,10 @@ Exit code 0 == all pass.
 import os
 import sys
 
-# Import extraction_core from the mod directory without importing the pymhf-bound mod.
-_MOD_DIR = os.path.join(os.path.dirname(__file__), "..", "mod")
+# Import extraction_core from the SHIPPING tree (mod2/payload) without importing
+# the pymhf-bound mod. mod/ is the retired 1.x tree and must not be what this
+# suite guards.
+_MOD_DIR = os.path.join(os.path.dirname(__file__), "..", "mod2", "payload")
 sys.path.insert(0, os.path.abspath(_MOD_DIR))
 
 from extraction_core import (  # noqa: E402

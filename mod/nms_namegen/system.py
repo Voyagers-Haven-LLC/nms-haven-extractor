@@ -134,7 +134,12 @@ def systemAttributes(portal_code, galaxy):
     if system_id < va["guide_star_renegade_count"]:
         star_type = rng.random(3) + 1
 
-    if system_id > 0x3E9 and system_id < 0x429:  # Purple
+    # Purple band = SSI 1001..1065 (0x3E9..0x429) inclusive: 65 systems
+    # (PurpleSystemsCount). SSI 1000 (0x3E8) is the hyperjump / core-arrival
+    # star and is never purple. The old `> 0x3E9 and < 0x429` dropped both
+    # ends (1001 and 1065). Verified 2026-09-12 against 2,255 extractor rows in
+    # the band: 1001-1065 scores 87.7% vs 85.2% (1002-1064) vs 76.5% (1000-1064).
+    if 0x3E9 <= system_id <= 0x429:  # Purple
         star_type = 4
 
     rng._updateSeed()
