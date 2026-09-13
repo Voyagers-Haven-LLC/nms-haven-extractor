@@ -75,10 +75,12 @@ def apply_update(zip_url: str, version: str) -> bool:
                         ignore=shutil.ignore_patterns("__pycache__", "logs"))
         with zipfile.ZipFile(tmp) as zf:
             names = zf.namelist()
-            # Accept flat contents or a single nested mod2/ folder
+            # Accept flat contents or a single nested mod/ (or legacy mod2/) folder
             prefix = ""
-            if all(n.startswith("mod2/") for n in names if not n.endswith("/")):
-                prefix = "mod2/"
+            for candidate in ("mod/", "mod2/"):
+                if all(n.startswith(candidate) for n in names if not n.endswith("/")):
+                    prefix = candidate
+                    break
             for n in names:
                 if n.endswith("/") or not n.startswith(prefix):
                     continue
@@ -137,10 +139,13 @@ def ensure_framework() -> bool:
 
 
 def main():
+    # `launcher.py --update-only` (UPDATE_HAVEN_EXTRACTOR.bat): run the update
+    # check + framework pin step and exit without starting the game.
+    update_only = "--update-only" in sys.argv[1:]
     env = load_env(str(ROOT / "haven.env"))
     api_url = env.get("HAVEN_API_URL", "https://havenmap.online")
     cur = current_version()
-    print(f"Haven Extractor v{cur}")
+    print(f"Haven Extractor v{cur}" + (" (update only)" if update_only else ""))
 
     try:
         latest = fetch_latest(api_url)
@@ -165,6 +170,10 @@ def main():
         ensure_framework()
     except Exception as e:
         print(f"(framework check skipped: {e})")
+
+    if update_only:
+        print("Update check complete.")
+        return
 
     print("Launching No Man's Sky ...")
     os.chdir(MOD_DIR)
