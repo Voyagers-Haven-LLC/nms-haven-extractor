@@ -9,7 +9,7 @@ other half.
 Needs the pinned framework importable (pymhf prompts at import unless
 PYTEST_VERSION is set — we set it). Skips cleanly when nmspy is absent so the
 plain `py` runner stays green; run it for real with the pinned interpreter:
-    PYTEST_VERSION=1 <python-with-nmspy-178994> mod2/tests/test_struct_read_nmspy.py
+    PYTEST_VERSION=1 <python-with-nmspy-178994> mod/tests/test_struct_read_nmspy.py
 """
 # pyMHF imports every .py one level under mod/ INSIDE THE GAME. This file is a
 # script: everything lives in main() so importing it does nothing at all.

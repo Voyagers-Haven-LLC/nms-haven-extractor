@@ -1,6 +1,6 @@
 """Exhaustive vocabulary tests: every enum value the game can produce must map to a
-string haven-ui's optionCatalog.json accepts. Run: py -m pytest mod2/tests -v
-(or plain: py mod2/tests/test_vocab_mappings.py)"""
+string haven-ui's optionCatalog.json accepts. Run: py -m pytest mod/tests -v
+(or plain: py mod/tests/test_vocab_mappings.py)"""
 import json
 import sys
 from pathlib import Path
