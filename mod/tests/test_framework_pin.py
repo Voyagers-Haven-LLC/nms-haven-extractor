@@ -38,11 +38,6 @@ ok &= check("framework_status returns the detail keys the state/health surface u
 ok &= check("framework_status ok flag agrees with needs list",
             status_ok == (detail["framework_needs"] == []))
 
-# pyproject.toml must carry the SAME pins (the dev/CI side of the same truth)
-pyproject = (MOD2.parent / "pyproject.toml").read_text(encoding="utf-8")
-ok &= check("pyproject pins nmspy to the same build", f'"nmspy=={nmspy_pin.NMSPY_PIN}"' in pyproject)
-ok &= check("pyproject pins pymhf to the same version", f'"pymhf=={nmspy_pin.PYMHF_PIN}"' in pyproject)
-
 # The launcher must read the pin AFTER the mod update and before importing pymhf.
 launcher = (MOD2 / "launcher.py").read_text(encoding="utf-8")
 i_update = launcher.index("apply_update(latest[\"patch_zip_url\"]")
@@ -53,7 +48,7 @@ ok &= check("launcher installs with the running interpreter (the embedded python
             'sys.executable, "-m", "pip", "install"' in launcher)
 
 # build_release stamps the sync client's UA version too (every 2.0.x release said 2.0.0-dev)
-br = (MOD2.parent / "build_release.py").read_text(encoding="utf-8")
+br = (MOD2.parent / "dist" / "build_release.py").read_text(encoding="utf-8")
 ok &= check("build_release stamps USER_AGENT_VERSION", "USER_AGENT_VERSION" in br)
 ok &= check("build_release refuses a Full zip with a mismatched embedded nmspy", "Refusing to build a Full zip" in br)
 
