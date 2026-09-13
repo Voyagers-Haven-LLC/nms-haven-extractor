@@ -10,8 +10,10 @@ from capture.offsets import (  # noqa: E402
     TRADING_CLASSES, WEALTH_CLASSES, CONFLICT_LEVELS, ALIEN_RACES, STAR_TYPES,
 )
 
-CATALOG = json.load(open(
-    r"C:\Master-Haven\Haven-UI\src\data\optionCatalog.json", encoding="utf-8"))
+# haven-ui is a sibling repo in the LLC tree; its option catalog is the vocabulary
+# the DB stores verbatim.
+CATALOG_PATH = Path(__file__).resolve().parents[3] / "haven-ui" / "src" / "data" / "optionCatalog.json"
+CATALOG = json.load(open(CATALOG_PATH, encoding="utf-8"))
 
 
 def catalog_values(key):

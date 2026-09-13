@@ -5,7 +5,10 @@ from pathlib import Path
 
 MOD2 = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MOD2))
-sys.path.insert(0, r"C:\Master-Haven\Haven-UI\backend")
+# haven-ui is a sibling repo in the LLC tree (C:\Master-Haven-LLC\haven-ui); the
+# merge-guard half of this test imports its db.merge_system_data.
+HAVEN_UI_BACKEND = MOD2.parents[1] / "haven-ui" / "backend"
+sys.path.insert(0, str(HAVEN_UI_BACKEND))
 
 from payload.extraction_core import build_planet_entry  # noqa: E402
 
@@ -54,6 +57,11 @@ ok &= check("negative control: unobserved fields absent from payload (not fabric
             and "description" not in entry2 and "has_rings" not in entry2)
 
 # --- Bug 6: merge guard -------------------------------------------------------
+if not HAVEN_UI_BACKEND.exists():
+    print(f"SKIP merge-guard half: haven-ui not checked out at {HAVEN_UI_BACKEND}")
+    print()
+    print("ALL PASS" if ok else "FAILURES PRESENT")
+    raise SystemExit(0 if ok else 1)
 from db import merge_system_data  # noqa: E402
 
 manual_pending = {'star_color': 'Red', 'conflict_level': 'High',

@@ -9,7 +9,7 @@ Release assets the website hub + launcher self-update consume:
 
 Usage:
     py build_release.py --version 2.0.0 [--mod-only]
-       [--python-dir "C:\\Master-Haven\\NMS-Haven-Extractor\\dist\\HavenExtractor\\python"]
+       [--python-dir "<repo>\\dist\\HavenExtractor\\python"]   (default; dist/ is gitignored)
        [--out dist_out]
 
 The version stamps mod2/haven_extractor2.py's __version__ AND
@@ -157,8 +157,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", required=True)
     ap.add_argument("--mod-only", action="store_true")
+    # The player image (embedded Python, ~110 MB, never committed) lives in this
+    # repo's ignored dist/ since 2026-09-12 — the old C:\Master-Haven tree is retired.
     ap.add_argument("--python-dir",
-                    default=r"C:\Master-Haven\NMS-Haven-Extractor\dist\HavenExtractor\python")
+                    default=str(REPO / "dist" / "HavenExtractor" / "python"))
     ap.add_argument("--out", default="dist_out")
     args = ap.parse_args()
 
