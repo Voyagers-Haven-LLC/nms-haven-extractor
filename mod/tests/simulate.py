@@ -10,7 +10,7 @@ Only capture/ (game-memory reads) is simulated — everything else here IS the
 2.0 code that ships.
 
 Usage:
-    python mod2/simulate.py --api http://127.0.0.1:8005 --interval 20
+    py mod/tests/simulate.py --api http://127.0.0.1:8005 --interval 20
 """
 
 import argparse
@@ -21,7 +21,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # mod/ (this file lives in mod/tests)
 
 from state import ExtractorState                     # noqa: E402
 from telemetry.events import EventBus                # noqa: E402

@@ -15,7 +15,7 @@ proves the properties that the galaxy + batch fixes depend on:
     to the next warp recycling game memory);
   * the planet field mapping and system-name precedence match the prior behaviour.
 
-Run:  python tests/test_extraction_core.py
+Run:  py mod/tests/test_extraction_core.py
 Exit code 0 == all pass.
 """
 
@@ -25,7 +25,7 @@ import sys
 # Import extraction_core from the SHIPPING tree (mod2/payload) without importing
 # the pymhf-bound mod. mod/ is the retired 1.x tree and must not be what this
 # suite guards.
-_MOD_DIR = os.path.join(os.path.dirname(__file__), "..", "mod2", "payload")
+_MOD_DIR = os.path.join(os.path.dirname(__file__), "..", "payload")
 sys.path.insert(0, os.path.abspath(_MOD_DIR))
 
 from extraction_core import (  # noqa: E402
