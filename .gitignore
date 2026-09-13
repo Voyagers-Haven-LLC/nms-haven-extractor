@@ -1,12 +1,7 @@
 __pycache__/
 *.pyc
 logs/
-mod/logs/
-haven_config.json
-mod/haven_config.json
-mod/config.json
-dist/
 *.zip
-mod2/sim_haven.env
+dist/python/
 haven.env
 haven.env.*

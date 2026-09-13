@@ -1,22 +1,32 @@
-"""Extractor 2.0 release packager (EXTRACTOR_2_0.md D10, phase 4).
+"""Haven Extractor release packager.
 
-Replaces the stale v8-era build_distributable.py. Produces the two GitHub
-Release assets the website hub + launcher self-update consume:
+Produces the two GitHub Release assets the website hub + launcher self-update
+consume:
 
-    HavenExtractor-mod2-v<X.Y.Z>.zip   mod2 contents, flat (the patch zip; the -mod2- name is deliberate: the 1.x updater matches HavenExtractor-mod- with a trailing dash and must never see 2.0 zips)
-    HavenExtractor-Full-v<X.Y.Z>.zip   full package: launcher bat + README +
-                                       haven.env defaults + mod2/ + python/
+    HavenExtractor-mod2-v<X.Y.Z>.zip   the patch zip: mod/ contents, flat.
+                                       The "-mod2-" asset name is a WIRE CONTRACT
+                                       and stays even though the folder is mod/:
+                                       haven-ui's /api/extractor/latest looks for
+                                       that prefix, and the 1.x updater still in
+                                       the wild matches "HavenExtractor-mod-" with a
+                                       trailing dash and must never see a 2.x zip.
+    HavenExtractor-Full-v<X.Y.Z>.zip   full package for new players: the two bats +
+                                       README + haven.env defaults + mod/ + python/
 
-Usage:
-    py build_release.py --version 2.0.0 [--mod-only]
-       [--python-dir "<repo>\\dist\\HavenExtractor\\python"]   (default; dist/ is gitignored)
-       [--out dist_out]
+Usage (from the repo root or anywhere):
+    py dist/build_release.py --version 2.1.0 [--mod-only]
+       [--python-dir dist/python] [--out dist]
 
-The version stamps mod2/haven_extractor2.py's __version__ AND
-mod2/sync/client.py's USER_AGENT_VERSION inside the zips (the working tree is
-left untouched). 2.1.0: a Full zip is refused unless the embedded python/ carries
-exactly the nmspy pinned in mod2/nmspy_pin.py — the framework is the
-game-compat surface now, so a Full zip with the wrong one is a broken release.
+Layout this script assumes (the repo root mirrors a player install):
+    README.md  RUN_HAVEN_EXTRACTOR.bat  UPDATE_HAVEN_EXTRACTOR.bat  haven.env
+    mod/       the one mod tree (its tests/ never ship)
+    dist/      this packager, the embedded python/ image (gitignored), built zips
+
+The version stamps mod/haven_extractor2.py's __version__ and
+mod/sync/client.py's USER_AGENT_VERSION inside the zips; the working tree is
+left untouched. A Full zip is refused unless the embedded python/ carries
+exactly the nmspy/pymhf pinned in mod/nmspy_pin.py — the framework is the
+game-compat surface, so a Full zip with the wrong one is a broken release.
 """
 
 import argparse
@@ -25,28 +35,45 @@ import re
 import zipfile
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent
-MOD2 = REPO / "mod2"
+REPO = Path(__file__).resolve().parent.parent
+MOD = REPO / "mod"
+DIST = REPO / "dist"
 
-EXCLUDE_NAMES = {"__pycache__", "logs", "sim_haven.env", "mod2_backup", "tests"}
+# Never ships: caches, logs, and the dev-only tests/ tree (harness + tools).
+EXCLUDE_NAMES = {"__pycache__", "logs", "tests"}
 
+# Players get exactly these two bats. They differ from the repo-root bats only
+# in the python path (a sibling python/ instead of dist/python).
 LAUNCHER_BAT = """@echo off
-REM Haven Extractor 2.0 - control it at https://havenmap.online/extractor
+REM Haven Extractor - control it at https://havenmap.online/extractor
 setlocal
 cd /d "%~dp0"
 if not exist "python\\python.exe" ( echo ERROR: run from the HavenExtractor folder. & pause & exit /b 1 )
 set "PATH=%~dp0python;%~dp0python\\Scripts;%PATH%"
-cd mod2
+cd mod
 "..\\python\\python.exe" launcher.py
 echo.
 pause
 """
 
-README_TXT = """HAVEN EXTRACTOR 2.0
-===================
+UPDATE_BAT = """@echo off
+REM Haven Extractor - update the mod and its framework without starting the game
+setlocal
+cd /d "%~dp0"
+if not exist "python\\python.exe" ( echo ERROR: run from the HavenExtractor folder. & pause & exit /b 1 )
+set "PATH=%~dp0python;%~dp0python\\Scripts;%PATH%"
+cd mod
+"..\\python\\python.exe" launcher.py --update-only
+echo.
+pause
+"""
+
+README_TXT = """HAVEN EXTRACTOR
+===============
 
 1. Extract this folder anywhere.
 2. Run RUN_HAVEN_EXTRACTOR.bat - it checks for updates and starts the game.
+   UPDATE_HAVEN_EXTRACTOR.bat does only the update step.
 3. Open https://havenmap.online/extractor, log in, and hit "Link this PC".
 4. Play. Every system you warp to appears on your Batch page automatically -
    rename what you like and submit for review from any device, even your phone.
@@ -64,21 +91,21 @@ HAVEN_LOCAL_PORT=8770
 """
 
 
-def iter_mod2_files():
-    for path in sorted(MOD2.rglob("*")):
+def iter_mod_files():
+    for path in sorted(MOD.rglob("*")):
         if path.is_dir():
             continue
-        rel = path.relative_to(MOD2)
+        rel = path.relative_to(MOD)
         if any(part in EXCLUDE_NAMES for part in rel.parts):
             continue
         yield path, rel
 
 
 def read_pin(name: str = "NMSPY_PIN") -> str:
-    text = (MOD2 / "nmspy_pin.py").read_text(encoding="utf-8")
+    text = (MOD / "nmspy_pin.py").read_text(encoding="utf-8")
     m = re.search(rf'^{name}\s*=\s*["\']([^"\']+)["\']', text, re.M)
     if not m:
-        raise SystemExit(f"{name} not found in mod2/nmspy_pin.py")
+        raise SystemExit(f"{name} not found in mod/nmspy_pin.py")
     return m.group(1)
 
 
@@ -95,13 +122,13 @@ def embedded_dist_version(python_dir: Path, dist: str):
 
 def stamped(path: Path, version: str) -> bytes:
     data = path.read_bytes()
-    if path.name == "haven_extractor2.py":
+    if path.name in ("haven_extractor2.py", "client.py"):
         text = data.decode("utf-8")
         text = re.sub(r"__version__\s*=\s*['\"][^'\"]+['\"]",
                       f'__version__ = "{version}"', text, count=1)
         text = re.sub(r"USER_AGENT_VERSION\s*=\s*['\"][^'\"]+['\"]",
                       f"USER_AGENT_VERSION = '{version}'", text, count=1)
-        data = text.encode("utf-8")
+        return text.encode("utf-8")
     return data
 
 
@@ -116,7 +143,7 @@ def sha256(path: Path) -> str:
 def build_mod_zip(version: str, out: Path) -> Path:
     target = out / f"HavenExtractor-mod2-v{version}.zip"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
-        for path, rel in iter_mod2_files():
+        for path, rel in iter_mod_files():
             zf.writestr(str(rel).replace("\\", "/"), stamped(path, version))
     return target
 
@@ -130,7 +157,7 @@ def build_full_zip(version: str, out: Path, python_dir: Path) -> Path:
     have_pymhf = embedded_dist_version(python_dir, "pymhf")
     if have != pin or have_pymhf != pymhf_pin:
         raise SystemExit(
-            f"embedded python has nmspy {have} / pymhf {have_pymhf}, but mod2/nmspy_pin.py "
+            f"embedded python has nmspy {have} / pymhf {have_pymhf}, but mod/nmspy_pin.py "
             f"pins nmspy {pin} / pymhf {pymhf_pin}. Refusing to build a Full zip that "
             f"ships the wrong framework. Fix with:\n"
             f'  "{python_dir / "python.exe"}" -m pip install --upgrade '
@@ -140,10 +167,11 @@ def build_full_zip(version: str, out: Path, python_dir: Path) -> Path:
     root = "HavenExtractor"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{root}/RUN_HAVEN_EXTRACTOR.bat", LAUNCHER_BAT)
+        zf.writestr(f"{root}/UPDATE_HAVEN_EXTRACTOR.bat", UPDATE_BAT)
         zf.writestr(f"{root}/README.txt", README_TXT)
         zf.writestr(f"{root}/haven.env", HAVEN_ENV)
-        for path, rel in iter_mod2_files():
-            zf.writestr(f"{root}/mod2/{str(rel).replace(chr(92), '/')}",
+        for path, rel in iter_mod_files():
+            zf.writestr(f"{root}/mod/{str(rel).replace(chr(92), '/')}",
                         stamped(path, version))
         for path in sorted(python_dir.rglob("*")):
             if path.is_dir() or "__pycache__" in path.parts:
@@ -157,14 +185,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", required=True)
     ap.add_argument("--mod-only", action="store_true")
-    # The player image (embedded Python, ~110 MB, never committed) lives in this
-    # repo's ignored dist/ since 2026-09-12 — the old C:\Master-Haven tree is retired.
-    ap.add_argument("--python-dir",
-                    default=str(REPO / "dist" / "HavenExtractor" / "python"))
-    ap.add_argument("--out", default="dist_out")
+    ap.add_argument("--python-dir", default=str(DIST / "python"),
+                    help="embedded Python image (gitignored; the Full zip ships it)")
+    ap.add_argument("--out", default=str(DIST))
     args = ap.parse_args()
 
-    out = REPO / args.out
+    out = Path(args.out)
     out.mkdir(exist_ok=True)
 
     mod_zip = build_mod_zip(args.version, out)
@@ -177,7 +203,7 @@ def main():
         print(f"  sha256 {sha256(full_zip)}")
 
     print(f"\nframework pin: nmspy {read_pin('NMSPY_PIN')} / pymhf {read_pin('PYMHF_PIN')} "
-          f"(launcher installs it on players' machines)")
+          f"(the launcher installs it on players' machines)")
     print("\nRelease checklist:")
     mod_path = str(out / f"HavenExtractor-mod2-v{args.version}.zip")
     full_path = "" if args.mod_only else " " + str(out / f"HavenExtractor-Full-v{args.version}.zip")
