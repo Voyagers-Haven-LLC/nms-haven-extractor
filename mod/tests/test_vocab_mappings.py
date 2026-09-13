@@ -13,11 +13,20 @@ from capture.offsets import (  # noqa: E402
 # haven-ui is a sibling repo in the LLC tree; its option catalog is the vocabulary
 # the DB stores verbatim.
 CATALOG_PATH = Path(__file__).resolve().parents[3] / "haven-ui" / "src" / "data" / "optionCatalog.json"
-CATALOG = json.load(open(CATALOG_PATH, encoding="utf-8"))
+_CATALOG = None
+
+
+def _catalog():
+    # Loaded lazily: pyMHF imports this file inside the game, where the sibling
+    # haven-ui checkout may not exist. Import must never do I/O or raise.
+    global _CATALOG
+    if _CATALOG is None:
+        _CATALOG = json.load(open(CATALOG_PATH, encoding="utf-8"))
+    return _CATALOG
 
 
 def catalog_values(key):
-    entries = CATALOG[key]
+    entries = _catalog()[key]
     return {e["value"] if isinstance(e, dict) else e for e in entries}
 
 
