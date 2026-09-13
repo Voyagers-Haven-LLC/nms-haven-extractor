@@ -8,3 +8,5 @@ mod/config.json
 dist/
 *.zip
 mod2/sim_haven.env
+haven.env
+haven.env.*

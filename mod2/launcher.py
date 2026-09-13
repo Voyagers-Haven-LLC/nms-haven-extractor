@@ -147,12 +147,17 @@ def main():
         latest_v = latest.get("version") or ""
         if latest_v and vtuple(latest_v) > vtuple(cur) and latest.get("patch_zip_url"):
             print(f"Update available: v{cur} -> v{latest_v}")
-            try:
-                answer = input("Update now? [Y/n] ").strip().lower()
-            except EOFError:
-                answer = "n"
-            if answer in ("", "y", "yes"):
-                apply_update(latest["patch_zip_url"], latest_v)
+            if (ROOT / ".git").exists():
+                # Dev checkout: mod2/ is the working tree. Never let a release zip
+                # overwrite it — pull with git instead.
+                print("  (git checkout detected — not applying the release zip over mod2/)")
+            else:
+                try:
+                    answer = input("Update now? [Y/n] ").strip().lower()
+                except EOFError:
+                    answer = "n"
+                if answer in ("", "y", "yes"):
+                    apply_update(latest["patch_zip_url"], latest_v)
     except Exception as e:
         print(f"(update check skipped: {e})")
 
