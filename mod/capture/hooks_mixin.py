@@ -24,7 +24,7 @@ import nmspy.data.basic_types as basic
 logger = logging.getLogger("haven_extractor2")
 
 from capture.offsets import *  # noqa: F401,F403
-from payload.tables import translate_resource, clean_weather_string  # noqa: F401
+from payload.tables import translate_resource, clean_weather_string, EXOTIC_TROPHIES  # noqa: F401
 from payload.extraction_core import planet_type_label
 
 
@@ -169,7 +169,7 @@ class CaptureHooksMixin:
                 logger.debug(f"Fauna extraction failed: {e}")
 
             # Extract Sentinels from GroundCombatDataPerDifficulty
-            # Array index matches reality mode: Normal=[2], Permadeath=[3]
+            # Indexed by the player's GroundCombatTimers option (see _get_difficulty_index)
             sentinel_raw = 0
             sentinel_name = "Unknown"
             try:
@@ -194,6 +194,9 @@ class CaptureHooksMixin:
                         sentinel_name = self.SENTINEL_LEVELS.get(sentinel_raw, f"Unknown({sentinel_raw})")
             except Exception as e:
                 logger.debug(f"Sentinel extraction failed: {e}")
+            # 2.1.1: cGcPlanetSentinelLevel.Corrupt (3) is the dissonant-planet marker.
+            # None == tier not read (payload omits it); False is a real observation.
+            is_dissonant = (sentinel_raw == SENTINEL_CORRUPT) if sentinel_name in SENTINEL_LEVELS.values() else None
 
             # Extract Biome, BiomeSubType, and Size from GenerationData
             # cGcPlanetData.GenerationData contains cGcPlanetGenerationIntermediateData
@@ -265,6 +268,21 @@ class CaptureHooksMixin:
                         rare_resource = ""
             except Exception as e:
                 logger.debug(f"Resource extraction failed: {e}")
+
+            # 2.1.1: typed planet flags the backend columns were waiting for.
+            # None == unreadable (key omitted from the payload); False is a real read.
+            has_rings = None
+            water_world = None
+            try:
+                has_rings = bool(planet_data.Rings.HasRings)
+            except Exception as e:
+                logger.debug(f"    Rings.HasRings unreadable: {e}")
+            try:
+                water_world = bool(planet_data.BuildingData.IsWaterworld) or (biome_raw == 14)  # cGcBiomeType.Waterworld
+            except Exception as e:
+                logger.debug(f"    BuildingData.IsWaterworld unreadable: {e}")
+                if biome_raw == 14:
+                    water_world = True
 
             # v1.4.5: Extract special resource flags from ExtraResourceHints + HasScrap
             extra_resource_hints = []
@@ -427,13 +445,18 @@ class CaptureHooksMixin:
                             fauna_display = ""
 
                     # Sentinel display string from SentinelsPerDifficulty
-                    # Index based on reality mode: Normal=[2], Permadeath=[3]
+                    # Indexed by the player's GroundCombatTimers option (see _get_difficulty_index)
                     if hasattr(info, 'SentinelsPerDifficulty'):
                         sent_arr = info.SentinelsPerDifficulty
                         if hasattr(sent_arr, '__getitem__'):
                             val = str(sent_arr[self._get_difficulty_index()]) or ""
                             sentinel_display = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
-                            if sentinel_display and sentinel_display != "None" and len(sentinel_display) >= 2:
+                            # "None" is the game's real value for a sentinel-free planet
+                            # (Haven counts it as filled) — keep it rather than fall back
+                            # to the combat tier label (2.1.1).
+                            if sentinel_display == "None":
+                                logger.info("    [DISPLAY] Sentinel: 'None'")
+                            elif sentinel_display and len(sentinel_display) >= 2:
                                 sentinel_display = self._resolve_adjective(sentinel_display, 'sentinel')
                                 logger.info(f"    [DISPLAY] Sentinel: '{sentinel_display}'")
                             else:
@@ -554,6 +577,10 @@ class CaptureHooksMixin:
                 'is_weather_extreme': is_weather_extreme,      # v1.4.0: Extreme weather flag
                 'extra_resource_hints': extra_resource_hints,  # v1.4.5: Special resource hint IDs
                 'has_scrap': has_scrap,                        # v1.4.5: HasScrap boolean
+                'has_rings': has_rings,                        # 2.1.1: cGcPlanetData.Rings.HasRings
+                'water_world': water_world,                    # 2.1.1: BuildingData.IsWaterworld / biome Waterworld
+                'is_dissonant': is_dissonant,                  # 2.1.1: SentinelLevel == Corrupt
+                'sentinel_raw': sentinel_raw,
             }
 
             # v1.4.5: Set special resource flags from ExtraResourceHints + HasScrap
@@ -571,6 +598,16 @@ class CaptureHooksMixin:
                     self._captured_planets[planet_key]['gravitino_balls'] = 1
                 if "vile brood" in translated_lower or "whispering egg" in translated_lower or hint_upper in ("INFESTATION", "VILEBROOD", "LARVA", "LARVAL", "UI_BUGS_HINT"):
                     self._captured_planets[planet_key]['vile_brood'] = 1
+            # 2.1.1: exotic (Weird) planets — the glitch collectible rides in the hints.
+            # Logged at INFO so real captures record the hint id per subtype (the
+            # resource table only translates ids it has been taught).
+            if biome_raw == 7:  # cGcBiomeType.Weird
+                logger.info(f"    [HINTS] exotic planet '{planet_name}' subtype={biome_subtype_raw} hint ids: {extra_resource_hints}")
+                for hint_id in extra_resource_hints:
+                    trophy = translate_resource(hint_id.upper())
+                    if trophy in EXOTIC_TROPHIES:
+                        self._captured_planets[planet_key]['exotic_trophy'] = trophy
+                        break
             # v1.4.6: HasScrap from hook time is unreliable (struct offset may have shifted
             # in Worlds Part 1 update, causing false positives). Scrap detection is now
             # handled at extraction time in _extract_single_planet instead.
@@ -713,13 +750,15 @@ class CaptureHooksMixin:
                         if raw and raw != "None" and len(raw) >= 2:
                             captured['fauna_display'] = self._resolve_adjective(raw, 'fauna')
 
-                    # Sentinel - index based on reality mode
+                    # Sentinel - indexed by the GroundCombatTimers option; "None" is real
                     if hasattr(info, 'SentinelsPerDifficulty'):
                         sent_arr = info.SentinelsPerDifficulty
                         if hasattr(sent_arr, '__getitem__'):
                             val = str(sent_arr[self._get_difficulty_index()]) or ""
                             raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
-                            if raw and raw != "None" and len(raw) >= 2:
+                            if raw == "None":
+                                captured['sentinel_display'] = "None"   # a sentinel-free planet
+                            elif raw and len(raw) >= 2:
                                 captured['sentinel_display'] = self._resolve_adjective(raw, 'sentinel')
 
                     # Weather

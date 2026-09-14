@@ -55,6 +55,10 @@ def main():
     p = good(); p["dominant_lifeform"] = "Unknown(9)"
     ok &= check("raw enum in lifeform is REFUSED", any("dominant_lifeform" in x for x in payload_sanity_problems(p)))
 
+    for label in ("Abandoned", "Exotics", "Autophage"):
+        p = good(); p["dominant_lifeform"] = label
+        ok &= check(f"lifeform {label!r} is a known label (2.1.1)", payload_sanity_problems(p) == [])
+
     p = good(); p["conflict_level"] = "Extreme"
     ok &= check("unknown label (not in the display table) is REFUSED", any("conflict_level" in x for x in payload_sanity_problems(p)))
 

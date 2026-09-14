@@ -81,6 +81,21 @@ def main():
     ok &= check("race=8 (Builders) -> fields NOT wiped (was wiped by old '>6' guard)",
                 r["conflict_level"] == "Medium" and r["economy_type"] == "Mining")
 
+    r = X._read_system_data_from_struct(FakeSolarSystemData(race_val=6))
+    ok &= check("race=6 -> 'Exotics' (was folded into None)", r["dominant_lifeform"] == "Exotics")
+    r = X._read_system_data_from_struct(FakeSolarSystemData(race_val=8))
+    ok &= check("race=8 (Builders) -> 'Autophage'", r["dominant_lifeform"] == "Autophage")
+
+    aband = FakeSolarSystemData(race_val=7)
+    aband.PlanetGenerationInputs = [types.SimpleNamespace(InAbandonedSystem=True, InPirateSystem=False)]
+    r = X._read_system_data_from_struct(aband)
+    ok &= check("InAbandonedSystem on the first body -> lifeform 'Abandoned' (economy stays 'None')",
+                r["dominant_lifeform"] == "Abandoned" and r["economy_type"] == "None" and r["_abandoned"] is True)
+    lived = FakeSolarSystemData(race_val=0)
+    lived.PlanetGenerationInputs = [types.SimpleNamespace(InAbandonedSystem=False, InPirateSystem=True)]
+    r = X._read_system_data_from_struct(lived)
+    ok &= check("flags false -> race label kept; pirate flag recorded", r["dominant_lifeform"] == "Gek" and r["_pirate"] is True)
+
     r = X._read_system_data_from_struct(FakeSolarSystemData(race_val=9))
     ok &= check("race=9 (out of enum range) -> no-data wipe to 'Unknown'",
                 r["dominant_lifeform"] == "Unknown" and r["economy_type"] == "Unknown"

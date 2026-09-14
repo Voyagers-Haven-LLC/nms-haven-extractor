@@ -220,9 +220,9 @@ class Simulator:
         payload = build_system_payload(
             snapshot=snapshot, coords=coords, planets=planets,
             extractor_version=self.state.version,
-            procedural_name=name, has_captured=True,
+            procedural_name=name,
             now_iso=datetime.now(timezone.utc).isoformat(),
-            now_ts=int(time.time()), trigger='auto_stage')
+            now_ts=int(time.time()))
         payload['reality'] = 'Normal'
         payload['game_mode'] = rng.choice(['Normal', 'Normal', 'Survival'])
 

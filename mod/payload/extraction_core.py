@@ -162,6 +162,13 @@ def build_planet_entry(
         result["description"] = captured['planet_description']
     if captured.get('has_rings') is not None:
         result["has_rings"] = bool(captured['has_rings'])
+    # 2.1.1: typed reads the backend columns were waiting for. None == not read
+    # (key stays absent); False is a real observation and IS shipped.
+    for flag in ("water_world", "is_dissonant"):
+        if captured.get(flag) is not None:
+            result[flag] = bool(captured[flag])
+    if captured.get('exotic_trophy'):
+        result["exotic_trophy"] = captured['exotic_trophy']
 
     for flag in _PLANET_FLAGS:
         if captured.get(flag):
@@ -251,11 +258,8 @@ def build_system_payload(
     planets: List[Dict[str, Any]],
     extractor_version: str,
     procedural_name: str,
-    has_captured: bool,
     now_iso: str,
     now_ts: int,
-    trigger: str = "batch_auto_save",
-    source: str = "live_extraction",
 ) -> Dict[str, Any]:
     """Assemble the full per-system upload dict from cached, while-live data.
 
@@ -271,6 +275,11 @@ def build_system_payload(
 
     Faithful reproduction of the prior ``_save_current_system_to_batch`` assembly
     (the ``**snapshot`` then ``**coords`` merge, name resolution, procgen stash).
+
+    2.1.1: ``trigger`` / ``source`` / ``data_source`` / ``discoverer_name`` are gone.
+    Every payload carried the same four constants and no backend path reads them
+    (``source`` comes from the API key, ``discovered_by`` defaults to the same
+    string). Constant fields are noise, not data.
     """
     sys_props = {k: v for k, v in (snapshot or {}).items() if not k.startswith('_')}
     coords = dict(coords or {})
@@ -278,11 +287,7 @@ def build_system_payload(
     data: Dict[str, Any] = {
         "extraction_time": now_iso,
         "extractor_version": extractor_version,
-        "trigger": trigger,
-        "source": source,
-        "data_source": "captured_hook" if has_captured else "memory_read",
         "captured_planet_count": len(planets),
-        "discoverer_name": "HavenExtractor",
         "discovery_timestamp": now_ts,
         **sys_props,   # system-level props from the live snapshot
         **coords,      # coords AFTER so a manual/actual system name overrides

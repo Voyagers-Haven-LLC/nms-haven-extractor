@@ -39,6 +39,8 @@ class ExtractorState:
         # Batch / sync
         self.batch_count = 0
         self.refused_count = 0          # 2.1.0: captures the sanity gate refused to stage
+        self.game_mode = ''             # 2.1.1: typed read ('' until read — never assumed)
+        self.reality = ''
         self.last_capture_at = None
         self.last_sync_at = None
 
@@ -95,6 +97,8 @@ class ExtractorState:
                 'identity': {'username': self.username, 'linked': self.linked},
                 'batch_count': self.batch_count,
                 'refused_count': self.refused_count,
+                'game_mode': self.game_mode,
+                'reality': self.reality,
                 'last_capture_at': self.last_capture_at,
                 'last_sync_at': self.last_sync_at,
             }

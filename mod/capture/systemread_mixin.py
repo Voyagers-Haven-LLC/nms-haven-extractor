@@ -31,7 +31,7 @@ from capture.offsets import *  # noqa: F401,F403
 
 
 class SystemReadMixin:
-    """System-level property reads + snapshot + gamemode detection (REVIVED — dead code in 1.x)."""
+    """System-level property reads + snapshot + game-mode detection (typed reads, 2.1.1)."""
 
     # ---- 2.1.0: struct-based system read (replaces the raw-offset _read_system_data_direct) ----
     @staticmethod
@@ -106,6 +106,18 @@ class SystemReadMixin:
             result["dominant_lifeform"] = ALIEN_RACES.get(race_val, f"Unknown({race_val})")
             logger.debug(f"  [STRUCT] Race: {result['dominant_lifeform']} (raw: {race_val})")
 
+            # 2.1.1: the system flags ride on every body's generation input; [0] is
+            # the first body and every system has one. Abandoned is NOT a race value
+            # (the race reads None_), so it is emitted from this flag.
+            result["_abandoned"] = False
+            result["_pirate"] = False
+            try:
+                gi0 = sd.PlanetGenerationInputs[0]
+                result["_abandoned"] = bool(gi0.InAbandonedSystem)
+                result["_pirate"] = bool(gi0.InPirateSystem)
+            except Exception as e:
+                logger.debug(f"  [STRUCT] system flags unreadable: {e}")
+
             try:
                 result["system_seed"] = int(sd.Seed.Seed)
             except Exception:
@@ -129,6 +141,10 @@ class SystemReadMixin:
                 result["economy_strength"] = "Unknown"
                 result["conflict_level"] = "Unknown"
                 result["dominant_lifeform"] = "Unknown"
+
+            if result.get("_abandoned"):
+                result["dominant_lifeform"] = "Abandoned"
+                logger.debug("  [STRUCT] InAbandonedSystem — lifeform 'Abandoned'")
 
         except Exception as e:
             logger.error(f"Struct system data read failed: {e}")
@@ -369,55 +385,84 @@ class SystemReadMixin:
         except Exception as e:
             logger.warning(f"  [SNAPSHOT] system_props snapshot failed: {e}")
 
-    # ---- source lines 4000-4050: _detect_game_mode (revived) + _get_difficulty_index ----
-    def _detect_game_mode(self) -> str:
-        """Auto-detect the player's game mode / difficulty preset from memory.
+    # ---- 2.1.1: game mode / difficulty from typed reads only ------------------
+    #
+    # Two typed sources, no literal offsets:
+    #   * cGcApplication.meGameMode (nmspy types.py, enum cGcGameMode) — live and
+    #     always readable in-game: Normal / Creative / Survival / Permadeath /
+    #     Seasonal. The authority for `reality`.
+    #   * cGcPlayerStateData.DifficultyState — the save struct the game hands to the
+    #     cGcPlayerState.LoadFromData / SaveToData hooks (typed pointer). .Preset is
+    #     the difficulty preset (adds Relaxed / Custom); .Settings.GroundCombatTimers
+    #     is the index into the per-difficulty planet arrays — exact on Custom.
+    # The old path read player_state + 0xE630 + 0x50 + 0x3210: a hand offset into
+    # cGcSeasonalGameModeData.DifficultySettingPreset — the SEASON template's preset,
+    # not the player's — which is why 34,007 of 34,101 prod rows say Normal.
 
-        Reads cGcDifficultySettingPreset from the player state's SeasonData.
-        Path: player_state base + 0xE630 (mPhotoModeSettings/CommonStateData)
-              + 0x50 (SeasonData) + 0x3210 (DifficultySettingPreset)
-        Total offset from player_state: 0x11890
-
-        Returns: "Normal", "Creative", "Relaxed", "Survival", "Permadeath", or "Custom"
-        """
+    def _note_difficulty_state(self, lData, source: str = "") -> bool:
+        """Read DifficultyState from a cGcPlayerStateData pointer (a hook argument).
+        Returns True when a usable preset was read."""
         try:
-            player_state = gameData.player_state
-            if not player_state:
-                logger.debug("[GAME_MODE] No player_state available")
-                return self._game_mode  # Keep last known
-
-            ps_addr = get_addressof(player_state)
-            if not ps_addr:
-                logger.debug("[GAME_MODE] Could not get player_state address")
-                return self._game_mode
-
-            # Read DifficultySettingPreset enum (uint32)
-            # Offset: 0xE630 (PhotoModeSettings) + 0x50 (SeasonData) + 0x3210 (DifficultySettingPreset)
-            preset_val = self._read_uint32(ps_addr, 0xE630 + 0x50 + 0x3210)
-            mode = GAME_MODE_PRESETS.get(preset_val, "Unknown")
-
-            if mode in ("Invalid", "Unknown"):
-                logger.debug(f"[GAME_MODE] Got preset_val={preset_val} ({mode}), keeping {self._game_mode}")
-                return self._game_mode
-
-            if mode != self._game_mode:
-                logger.info(f"[GAME_MODE] Detected: {mode} (was {self._game_mode})")
-            self._game_mode = mode
-            return mode
-
+            addr = get_addressof(lData)
+            if not addr:
+                return False
+            psd = map_struct(addr, nmse.cGcPlayerStateData)
+            ds = psd.DifficultyState
+            preset_raw = self._enum_raw(ds.Preset)
+            timers_raw = self._enum_raw(ds.Settings.GroundCombatTimers)
         except Exception as e:
-            logger.debug(f"[GAME_MODE] Detection failed: {e}")
-            return self._game_mode
+            logger.debug(f"[GAME_MODE] DifficultyState unreadable ({source}): {e}")
+            return False
+        preset = GAME_MODE_PRESETS.get(preset_raw, f"Unknown({preset_raw})")
+        if preset == "Invalid" or preset.startswith("Unknown("):
+            logger.debug(f"[GAME_MODE] preset raw={preset_raw} ignored ({source})")
+            return False
+        changed = (preset != self._game_mode_preset) or (timers_raw != self._combat_timer_index)
+        self._game_mode_preset = preset
+        if 0 <= timers_raw <= 3:
+            self._combat_timer_index = timers_raw
+        self._game_mode = preset
+        if changed:
+            logger.info(f"[GAME_MODE] preset={preset} combat_timers={timers_raw} via {source}")
+        return True
+
+    def _read_app_game_mode(self) -> str:
+        """cGcApplication.meGameMode as its enum name; '' when unreadable."""
+        try:
+            app = gameData.GcApplication
+            if app is None:
+                return ""
+            raw = int(app.meGameMode)
+        except Exception as e:
+            logger.debug(f"[GAME_MODE] meGameMode unreadable: {e}")
+            return ""
+        return APP_GAME_MODES.get(raw, f"Unknown({raw})")
+
+    def _detect_game_mode(self) -> str:
+        """Refresh game_mode from the typed sources. Returns the game mode, or ''
+        while nothing has been read yet (the upload then omits the field rather
+        than claim Normal)."""
+        app_mode = self._read_app_game_mode()
+        if app_mode and app_mode != self._app_game_mode:
+            logger.info(f"[GAME_MODE] application mode: {app_mode}")
+            self._app_game_mode = app_mode
+        if self._game_mode_preset:
+            self._game_mode = self._game_mode_preset
+        elif app_mode in GAME_MODE_PRESET_NAMES:
+            self._game_mode = app_mode          # Normal / Creative / Survival / Permadeath
+        return self._game_mode
+
+    def _reality(self) -> str:
+        """Permadeath iff either typed source says so (a Permadeath save under a
+        Custom preset is still Permadeath); Normal otherwise."""
+        if self._app_game_mode == "Permadeath" or self._game_mode_preset == "Permadeath":
+            return "Permadeath"
+        return "Normal"
 
     def _get_difficulty_index(self) -> int:
-        """Get the per-difficulty array index based on detected game mode.
-
-        Post-Worlds Part 1 index mapping:
-          [0] = Casual/Creative
-          [1] = Relaxed
-          [2] = Normal (also Custom)
-          [3] = Survival/Permadeath
-
-        Used for SentinelsPerDifficulty and GroundCombatDataPerDifficulty arrays.
-        """
+        """Index into SentinelsPerDifficulty / GroundCombatDataPerDifficulty (4 slots):
+        the typed GroundCombatTimers option once read, the preset fallback map before."""
+        idx = self._combat_timer_index
+        if isinstance(idx, int) and 0 <= idx <= 3:
+            return idx
         return GAME_MODE_TO_DIFFICULTY_INDEX.get(self._game_mode, 2)

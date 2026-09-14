@@ -35,6 +35,7 @@ from capture.hooks_mixin import CaptureHooksMixin
 from capture.systemread_mixin import SystemReadMixin
 from capture.memory_mixin import MemoryMixin
 from capture.namegen_probe import NMS_NAMEGEN_AVAILABLE
+from capture.offsets import SENTINEL_LEVELS
 from language.language_mixin import LanguageMixin
 from payload.payload_mixin import PayloadMixin
 from resolve.resolve_mixin import ResolveMixin
@@ -50,7 +51,7 @@ from api_local.server import LocalApi
 
 logger = logging.getLogger("haven_extractor2")
 
-__version__ = "2.1.0-dev"
+__version__ = "2.1.1-dev"
 
 # Required memory hooks — the readiness gate checks these against pyMHF's
 # registry after load (June 16 2026: 'Unable to find offset for
@@ -87,7 +88,10 @@ class HavenPersist(ModState):
     pending_extraction: bool = False
     cached_solar_system: Any = None
     cached_sys_data_addr: Any = None
-    game_mode: str = "Normal"
+    game_mode: str = ""             # '' until a typed source has been read (never assumed Normal)
+    game_mode_preset: str = ""      # cGcPlayerStateData.DifficultyState.Preset name (Load/SaveToData hooks)
+    app_game_mode: str = ""         # cGcApplication.meGameMode name (live typed read)
+    combat_timer_index: Optional[int] = None   # DifficultyState.Settings.GroundCombatTimers (0..3)
     events: Any = None          # the EventBus — the website terminal keeps its history
 
 
@@ -133,12 +137,15 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
     _cached_solar_system = _persisted("cached_solar_system")
     _cached_sys_data_addr = _persisted("cached_sys_data_addr")
     _game_mode = _persisted("game_mode")
+    _game_mode_preset = _persisted("game_mode_preset")
+    _app_game_mode = _persisted("app_game_mode")
+    _combat_timer_index = _persisted("combat_timer_index")
     events = _persisted("events")
 
     # Fallback level maps (verbatim v1 class attrs; used by planet capture)
     FLORA_LEVELS = {0: "None", 1: "Sparse", 2: "Average", 3: "Bountiful"}
     FAUNA_LEVELS = {0: "None", 1: "Sparse", 2: "Regular", 3: "Copious"}
-    SENTINEL_LEVELS = {0: "Minimal", 1: "Limited", 2: "High", 3: "Aggressive"}
+    SENTINEL_LEVELS = SENTINEL_LEVELS   # capture/offsets.py — keyed to cGcPlanetSentinelLevel (2.1.1)
 
     # ------------------------------------------------------------------ init
 
@@ -167,7 +174,6 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         self._cached_solar_system = None
         self._cached_sys_data_addr = None
         self._status_display = "Loading"
-        self._game_mode = "Normal"
         self._output_dir = Path.home() / "Documents" / "Haven-Extractor"
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -222,7 +228,8 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
 
         # local API (defensive bind — never let a failure escape into pyMHF)
         try:
-            self.local_api = LocalApi(self.state, self.events, on_pair=self._on_pair)
+            self.local_api = LocalApi(self.state, self.events, on_pair=self._on_pair,
+                                      allowed_origins=self.env.get("HAVEN_ALLOWED_ORIGINS"))
             port = self.local_api.start(int(self.env.get("HAVEN_LOCAL_PORT", "8770")))
             if port:
                 self.events.emit("SESSION", f"Local API on 127.0.0.1:{port} — "
@@ -467,6 +474,28 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             logger.debug(f"[2.0] publish failed: {e}")
         return result
 
+    # 2.1.1: the difficulty preset lives in the save struct, which the game hands
+    # us as a typed cGcPlayerStateData pointer on load and on every save (autosave
+    # included). Optional hooks: not in REQUIRED_HOOKS, the typed application
+    # game mode still covers reality if a pattern ever fails to resolve.
+    @nms.cGcPlayerState.LoadFromData.after
+    def on_player_state_loaded(self, this, lData, a3, lbNetworkClientLoad, lbIsLoadingForReset, a6):
+        self._hook_last_fire["player_state_load"] = time.time()
+        try:
+            if self._note_difficulty_state(lData, "LoadFromData"):
+                self._detect_game_mode()
+        except Exception as e:
+            logger.debug(f"[GAME_MODE] LoadFromData hook failed: {e}")
+
+    @nms.cGcPlayerState.SaveToData.after
+    def on_player_state_saved(self, this, lData):
+        self._hook_last_fire["player_state_save"] = time.time()
+        try:
+            if self._note_difficulty_state(lData, "SaveToData"):
+                self._detect_game_mode()
+        except Exception as e:
+            logger.debug(f"[GAME_MODE] SaveToData hook failed: {e}")
+
     @on_fully_booted
     def on_fully_booted(self):
         """pyMHF's MODESELECTOR trigger: hook registration is final by now, so
@@ -552,10 +581,11 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         self._last_publish = now
         coords = self._current_system_coords or {}
         snap = self._current_system_snapshot or {}
-        game_mode = self._game_mode
-        reality = "Permadeath" if game_mode == "Permadeath" else "Normal"
+        game_mode = self._detect_game_mode()
+        reality = self._reality()
+        self.state.update(game_mode=game_mode, reality=reality)
         system = {**{k: v for k, v in snap.items() if not k.startswith('_')},
-                  **coords, "game_mode": game_mode, "reality": reality}
+                  **coords, "game_mode": game_mode or "Unknown", "reality": reality}
         if warp:
             name = system.get("system_name") or "…"
             self.state.begin_system(system)
@@ -603,8 +633,8 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         """Move newly frozen batch entries into the upload queue + journal.
         The freeze itself is the verbatim v1 path (_save_current_system_to_batch);
         this replaces the old Export button with auto-staging (D1/D3)."""
-        game_mode = self._game_mode
-        reality = "Permadeath" if game_mode == "Permadeath" else "Normal"
+        game_mode = self._detect_game_mode()
+        reality = self._reality()
         from payload.extraction_core import galaxy_is_known
         for entry in list(self._batch_systems):
             glyph = entry.get("glyph_code") or ""
@@ -662,7 +692,8 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                                  f"flagged for review.",
                                  level="warning", coalesce_key=f"soft-{glyph}")
             payload = dict(entry)
-            payload["game_mode"] = game_mode
+            if game_mode:
+                payload["game_mode"] = game_mode   # omitted while unread — never claims Normal
             payload["reality"] = reality
             payload["extractor_version"] = __version__
             self._enqueued_glyphs.add(glyph)

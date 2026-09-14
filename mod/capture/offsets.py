@@ -66,6 +66,16 @@ PLANET_SIZES = {
     0: "Large", 1: "Medium", 2: "Small", 3: "Moon", 4: "Giant"
 }
 
+# cGcPlanetSentinelLevel — the per-planet combat tier read from
+# GroundCombatDataPerDifficulty[<combat-timer index>].SentinelLevel. The game's
+# members are Low / Default / Aggressive / Corrupt; the labels are catalog words.
+# 3 (Corrupt) IS the dissonant-planet marker. Until 2.1.1 this table said
+# {0: Minimal, 1: Limited, 2: High, 3: Aggressive}, so a corrupted planet that fell
+# back to the tier label uploaded as "Aggressive". Fallback only: the PlanetInfo
+# display string ("Frenzied", "Dissonant", "None") is preferred when present.
+SENTINEL_LEVELS = {0: "Low", 1: "Normal", 2: "Aggressive", 3: "Corrupted"}
+SENTINEL_CORRUPT = 3
+
 # Values must match haven-ui optionCatalog.json economy_types — the DB stores these verbatim.
 # cGcTradingClass: HighTech->Technology, Fusion->Advanced Materials, PowerGeneration->Power Generation
 TRADING_CLASSES = {
@@ -90,9 +100,9 @@ ALIEN_RACES = {
     3: "None",       # Robots/Sentinel systems
     4: "None",       # Atlas
     5: "None",       # Diplomats (unused)
-    6: "None",       # Uninhabited
+    6: "Exotics",    # cGcAlienRace.Exotics — a real inhabitant class; folded into "None" until 2.1.1
     7: "None",       # v1.6.12: post-Voyagers — observed raw=7 for abandoned/no-race systems
-    8: "None",       # Reserved
+    8: "Autophage",  # cGcAlienRace.Builders — the Autophage (Echoes); said "None" until 2.1.1
 }
 
 # cGcGalaxyStarTypes enum (from nmspy cGcGalaxyStarTypes IntEnum)
@@ -142,7 +152,19 @@ GAME_MODE_PRESETS = {
     6: "Permadeath",
 }
 
-# Map game mode preset to SentinelsPerDifficulty array index
+# cGcGameMode — cGcApplication.meGameMode, typed in nmspy types.py. Live in-game;
+# the authority for reality (Permadeath) and the fallback for game_mode.
+APP_GAME_MODES = {
+    0: "Unspecified", 1: "Normal", 2: "Creative", 3: "Survival",
+    4: "Ambient", 5: "Permadeath", 6: "Seasonal",
+}
+GAME_MODE_PRESET_NAMES = frozenset(v for v in GAME_MODE_PRESETS.values() if v != "Invalid")
+
+# FALLBACK preset -> per-difficulty array index, used only until the real index
+# has been read. SentinelsPerDifficulty[4] / GroundCombatDataPerDifficulty[4] are
+# indexed by the player's DifficultyState.Settings.GroundCombatTimers option
+# (cGcCombatTimerDifficultyOption: Off=0 / Slow=1 / Normal=2 / Fast=3), which the
+# cGcPlayerState.LoadFromData / SaveToData hooks deliver typed — exact on Custom too.
 GAME_MODE_TO_DIFFICULTY_INDEX = {
     "Creative": 0,    # Casual
     "Relaxed": 1,     # Relaxed
@@ -150,4 +172,21 @@ GAME_MODE_TO_DIFFICULTY_INDEX = {
     "Custom": 2,      # Custom defaults to Normal index
     "Survival": 3,    # Survival/Permadeath
     "Permadeath": 3,  # Survival/Permadeath
+}
+
+# Which nmspy enum each display table mirrors. tests/test_enum_tables.py asserts the
+# key sets match the pinned build exactly, so a member the game adds surfaces as a
+# failing test instead of an Unknown(<raw>) label in someone's upload.
+ENUM_SOURCES = {
+    "BIOME_TYPES": "cGcBiomeType",
+    "BIOME_SUBTYPES": "cGcBiomeSubType",
+    "PLANET_SIZES": "cGcPlanetSize",
+    "TRADING_CLASSES": "cGcTradingClass",
+    "WEALTH_CLASSES": "cGcWealthClass",
+    "CONFLICT_LEVELS": "cGcPlayerConflictData",
+    "ALIEN_RACES": "cGcAlienRace",
+    "STAR_TYPES": "cGcGalaxyStarTypes",
+    "SENTINEL_LEVELS": "cGcPlanetSentinelLevel",
+    "GAME_MODE_PRESETS": "cGcDifficultyPresetType",
+    "APP_GAME_MODES": "cGcGameMode",
 }

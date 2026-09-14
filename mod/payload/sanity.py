@@ -51,6 +51,10 @@ SYSTEM_LABEL_TABLES = (
     ("dominant_lifeform", ALIEN_RACES),
 )
 
+# Labels a system field may carry beyond its enum table: "Abandoned" comes from
+# PlanetGenerationInputs[0].InAbandonedSystem, not from the race enum.
+EXTRA_LABELS = {"dominant_lifeform": frozenset({"Abandoned"})}
+
 # Planet fields whose raw-enum garbage means the planet struct layout moved.
 PLANET_HARD_FIELDS = ("biome",)
 
@@ -99,7 +103,7 @@ def payload_sanity_problems(payload: Dict[str, Any], max_bodies: int = MAX_BODIE
             problems.append(f"{key}={value!r} is not a string")
         elif RAW_ENUM_RE.match(value):
             problems.append(f"{key}={value} (raw enum out of range)")
-        elif value not in set(table.values()):
+        elif value not in set(table.values()) | EXTRA_LABELS.get(key, frozenset()):
             problems.append(f"{key}={value!r} is not a known label")
 
     # any other system-level string carrying a raw enum

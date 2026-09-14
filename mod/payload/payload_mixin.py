@@ -61,7 +61,6 @@ class PayloadMixin:
                 logger.warning("[BATCH] No system-props snapshot for current system - star/economy/lifeform may be missing")
 
             planets = self._planets_from_captured()
-            has_captured = len(self._captured_planets) > 0
 
             # Procedural name (pure namegen, no game memory). galaxy_index may be None when the
             # galaxy is still unknown - use 0 only as a naming seed (the system won't upload
@@ -78,7 +77,6 @@ class PayloadMixin:
                 planets=planets,
                 extractor_version=self.__version__,
                 procedural_name=procgen_name,
-                has_captured=has_captured,
                 now_iso=datetime.now().isoformat(),
                 now_ts=int(datetime.now().timestamp()),
             )

@@ -35,6 +35,16 @@ Players get `RUN_HAVEN_EXTRACTOR.bat`, `UPDATE_HAVEN_EXTRACTOR.bat`, `README.txt
 `haven.env`, `mod/` and `python/` side by side. The repo-root bats are the same
 three lines with `dist\python` in place of the sibling `python\`.
 
+## haven.env keys
+
+```
+HAVEN_API_URL           https://havenmap.online (players) — a review backend on the dev box
+HAVEN_API_KEY           your extractor key (written by the website Link flow; never commit it)
+HAVEN_LOCAL_PORT        preferred local API port, 8770 (falls forward to 8779)
+HAVEN_ALLOWED_ORIGINS   extra browser origins the local API answers, comma-separated
+                        (dev only, e.g. http://100.70.191.5:5173). havenmap.online is always allowed.
+```
+
 ## Run it from this checkout
 
 `RUN_HAVEN_EXTRACTOR.bat`. It needs the embedded Python image at

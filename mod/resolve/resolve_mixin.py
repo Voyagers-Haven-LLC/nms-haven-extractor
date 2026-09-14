@@ -27,11 +27,12 @@ from resolve.galaxydata import GALAXY_NAMES, get_galaxy_name  # noqa: F401
 from capture.offsets import *  # noqa: F401,F403
 from payload.extraction_core import decide_galaxy
 from capture.namegen_probe import (NMS_NAMEGEN_AVAILABLE, nms_system_name,
-    nms_region_name, nms_planet_name)
+    nms_region_name)
 
 
 class ResolveMixin:
-    """Coordinate/glyph/galaxy resolution + procedural naming (planet namegen REVIVED)."""
+    """Coordinate/glyph/galaxy resolution + procedural system/region naming.
+    (2.1.1: the never-called planet namegen is gone — the game names every body we capture.)"""
 
     # ---- source lines 4071-4424: galaxy readers + voter + coords + upgrade + proc names ----
     def _galaxy_in_range(self, raw) -> Optional[int]:
@@ -538,26 +539,3 @@ class ResolveMixin:
         except Exception as e:
             logger.debug(f"  Region name generation failed: {e}")
             return f"Region_{glyph_code[:8]}"
-
-    def _generate_planet_name(self, planet_seed: int) -> str:
-        """Generate procedural planet name using NMS algorithm.
-
-        Args:
-            planet_seed: 64-bit planet seed integer
-
-        Returns:
-            Procedurally generated planet name, or empty string if generation fails
-        """
-        if not NMS_NAMEGEN_AVAILABLE:
-            return ""
-
-        try:
-            if not planet_seed or planet_seed == 0:
-                return ""
-
-            name = nms_planet_name(planet_seed)
-            logger.debug(f"  Generated planet name: '{name}' (seed=0x{planet_seed:016X})")
-            return name
-        except Exception as e:
-            logger.debug(f"  Planet name generation failed: {e}")
-            return ""

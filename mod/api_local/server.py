@@ -17,9 +17,12 @@ Hard rules (verified against pyMHF internals 2026-08-07):
   * Handlers only read ExtractorState/EventBus snapshots — NEVER game
     memory — and stay short (one GIL shared with game-thread hooks).
 
-CORS: permissive during dev; tighten allowed origins to havenmap.online at
-release. Chrome 142+ gates public-site->localhost behind the Local Network
-Access permission; the preflight response carries the PNA header.
+CORS (2.1.1): only havenmap.online may read responses in a browser, plus any
+origin listed in haven.env HAVEN_ALLOWED_ORIGINS (comma-separated; a dev Vite
+server, for instance). A request from any other origin gets no Allow-Origin
+header and the browser blocks the read. Non-browser callers send no Origin
+and are unaffected. Chrome 142+ gates public-site->localhost behind the Local
+Network Access permission; the preflight response carries the PNA header.
 """
 
 import json
@@ -40,11 +43,26 @@ logger = logging.getLogger('haven_extractor.local_api')
 
 PORT_RANGE = list(range(8770, 8780))
 
+DEFAULT_ALLOWED_ORIGINS = ("https://havenmap.online", "https://www.havenmap.online")
+
+
+def parse_origins(extra=None) -> frozenset:
+    """Allowed browser origins: production plus HAVEN_ALLOWED_ORIGINS entries."""
+    out = set(DEFAULT_ALLOWED_ORIGINS)
+    for item in str(extra or "").split(","):
+        item = item.strip().rstrip("/")
+        if item:
+            out.add(item)
+    return frozenset(out)
+
 
 class LocalApi:
-    def __init__(self, state, events, on_pair=None):
+    def __init__(self, state, events, on_pair=None, allowed_origins=None):
         """on_pair(token) -> dict — redeems the token upstream (sync client),
-        persists a provisioned key, and returns the handshake result."""
+        persists a provisioned key, and returns the handshake result.
+        allowed_origins: the HAVEN_ALLOWED_ORIGINS string (or an iterable)."""
+        self.allowed_origins = (parse_origins(allowed_origins) if isinstance(allowed_origins, (str, type(None)))
+                                else frozenset(DEFAULT_ALLOWED_ORIGINS) | frozenset(allowed_origins))
         self.state = state
         self.events = events
         self.on_pair = on_pair
@@ -67,7 +85,10 @@ class LocalApi:
                 pass
 
             def _cors(self):
-                self.send_header('Access-Control-Allow-Origin', '*')
+                origin = (self.headers.get('Origin') or '').strip().rstrip('/')
+                if origin in api.allowed_origins:
+                    self.send_header('Access-Control-Allow-Origin', origin)
+                    self.send_header('Vary', 'Origin')
                 self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
                 self.send_header('Access-Control-Allow-Headers', 'Content-Type')
                 # Chrome Local Network Access preflight

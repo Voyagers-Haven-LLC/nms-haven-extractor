@@ -148,7 +148,6 @@ def _system(snapshot, coords, captured_planets, procgen):
     return build_system_payload(
         snapshot=snapshot, coords=coords, planets=planets,
         extractor_version="1.10.0-test", procedural_name=procgen,
-        has_captured=bool(captured_planets),
         now_iso="2026-05-25T00:00:00", now_ts=1700000000,
     )
 
@@ -366,6 +365,25 @@ def test_galaxy_is_known():
     check("missing galaxy -> unknown", galaxy_is_known({}) is False)
 
 
+def test_planet_flags_2_1_1():
+    print("2.1.1 planet flags + constant-field removal:")
+    cap = {"planet_name": "Ringed", "biome": "Weird", "has_rings": True, "water_world": False,
+           "is_dissonant": True, "exotic_trophy": "Cable Pod"}
+    p = _planet_builder(cap, 0)
+    check("has_rings True shipped", p.get("has_rings") is True)
+    check("water_world False is a real read and IS shipped", p.get("water_world") is False)
+    check("is_dissonant True shipped", p.get("is_dissonant") is True)
+    check("exotic_trophy shipped", p.get("exotic_trophy") == "Cable Pod")
+    bare = _planet_builder({"planet_name": "Bare", "biome": "Lush", "has_rings": None,
+                            "water_world": None, "is_dissonant": None, "exotic_trophy": ""}, 1)
+    check("unread flags (None) stay ABSENT", all(k not in bare for k in ("has_rings", "water_world", "is_dissonant", "exotic_trophy")))
+    sysp = _system({"system_name": "S", "star_color": "Red"}, {"glyph_code": "0123456789AB", "galaxy_name": "Euclid"},
+                   {"Bare": {"planet_name": "Bare", "biome": "Lush"}}, "Procgen")
+    check("constant fields trigger/source/data_source/discoverer_name are gone",
+          all(k not in sysp for k in ("trigger", "source", "data_source", "discoverer_name")))
+    check("real fields remain", sysp["extractor_version"] == "1.10.0-test" and sysp["captured_planet_count"] == 1)
+
+
 def main():
     print("=" * 64)
     print("Haven Extractor data-handling smoke test (extraction_core)")
@@ -379,6 +397,7 @@ def main():
     test_phantom_filter()
     test_display_adjective_preference()
     test_galaxy_is_known()
+    test_planet_flags_2_1_1()
     print("=" * 64)
     if _failures:
         print(f"RESULT: {len(_failures)} FAILED -> {_failures}")

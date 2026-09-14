@@ -306,3 +306,13 @@ def clean_weather_string(weather_str: str) -> str:
         return cleaned.title()
 
     return weather_str
+
+
+# The exotic-planet glitch collectibles as Haven's catalog spells them
+# (haven-ui backend/resource_catalog.py). A Weird-biome planet whose
+# ExtraResourceHints translate to one of these ships it as exotic_trophy.
+EXOTIC_TROPHIES = frozenset({
+    "Bubble Cluster", "Cable Pod", "Calcishroom", "Capillary Shell", "Electric Cube",
+    "Glitching Separator", "Hexplate Bush", "Light Fissure", "Ossified Star",
+    "Rattle Spine", "Terbium Growth",
+})
