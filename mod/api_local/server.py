@@ -28,6 +28,14 @@ import queue
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+
+class _ExclusiveHTTPServer(ThreadingHTTPServer):
+    # HTTPServer sets allow_reuse_address=True (SO_REUSEADDR). On Windows that lets a
+    # second process bind a port ANOTHER process is already listening on, so a
+    # reloaded or second instance could silently shadow the live one on 8770.
+    # Exclusive binding makes the 8770-8779 fallback scan truthful.
+    allow_reuse_address = False
+
 logger = logging.getLogger('haven_extractor.local_api')
 
 PORT_RANGE = list(range(8770, 8780))
@@ -163,7 +171,7 @@ class LocalApi:
 
         for port in ports:
             try:
-                self._server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+                self._server = _ExclusiveHTTPServer(('127.0.0.1', port), Handler)
                 self._server.daemon_threads = True
                 self.port = port
                 break
@@ -184,8 +192,16 @@ class LocalApi:
         return self.port
 
     def stop(self):
-        if self._server:
+        # shutdown() only ends serve_forever(); server_close() is what releases the
+        # listening socket. Without it a reloaded instance cannot rebind 8770 and the
+        # website keeps talking to a dead port.
+        srv, self._server = self._server, None
+        if srv:
             try:
-                self._server.shutdown()
+                srv.shutdown()
+            except Exception:
+                pass
+            try:
+                srv.server_close()
             except Exception:
                 pass

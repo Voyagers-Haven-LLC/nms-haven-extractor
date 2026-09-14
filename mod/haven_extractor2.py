@@ -18,12 +18,16 @@ control surface. The env file next to the install root holds the key.
 import json
 import logging
 import queue
+import subprocess
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
 
 from pymhf import Mod
+from pymhf.core.mod_loader import ModState
 import nmspy.data.types as nms
 from nmspy.decorators import on_state_change, on_fully_booted
 
@@ -36,7 +40,7 @@ from payload.payload_mixin import PayloadMixin
 from resolve.resolve_mixin import ResolveMixin
 
 from state import ExtractorState
-from nmspy_pin import framework_status
+from nmspy_pin import framework_status, framework_needs, embedded_python_exe, pip_upgrade_command
 from readiness import registry_names, unbound_required_hooks
 from payload.sanity import payload_sanity_problems, payload_soft_warnings
 from telemetry.events import EventBus
@@ -60,11 +64,76 @@ REQUIRED_HOOKS = (
 ENV_FILENAME = "haven.env"
 
 
+@dataclass
+class HavenPersist(ModState):
+    """Everything that must survive a pyMHF mod reload (website 'Reload Mod').
+
+    pyMHF captures every ModState attribute of the mod instance on first load and
+    re-attaches the SAME objects to the fresh instance after a reload (setattr by
+    attribute name, after __init__). The mod exposes these fields through
+    property-backed attributes (see _persisted below), so __init__ writes its
+    defaults into a throwaway HavenPersist and the reload swap makes the old
+    values visible again with no call-site changes.
+    """
+    captured_planets: Dict[str, Any] = field(default_factory=dict)
+    batch_systems: List[dict] = field(default_factory=list)
+    enqueued_glyphs: Set[str] = field(default_factory=set)
+    refused_glyphs: Set[str] = field(default_factory=set)
+    current_system_coords: Optional[dict] = None
+    current_system_snapshot: Optional[dict] = None
+    snapshot_identity_seed: int = 0
+    capture_enabled: bool = False
+    system_saved_to_batch: bool = False
+    pending_extraction: bool = False
+    cached_solar_system: Any = None
+    cached_sys_data_addr: Any = None
+    game_mode: str = "Normal"
+    events: Any = None          # the EventBus — the website terminal keeps its history
+
+
+def _persisted(name):
+    """Property that stores `self.<attr>` on self.persist.<name>."""
+    def _get(self):
+        return getattr(self.persist, name)
+
+    def _set(self, value):
+        setattr(self.persist, name, value)
+    return property(_get, _set)
+
+
+class _ReloadShim:
+    """What pyMHF's ModManager.reload() expects from the GUI when there is none:
+    the sub-module reload flag (we want mixins reloaded too) and a tab callback."""
+    module_reload_enabled = True
+
+    def reload_tab(self, mod):
+        return None
+
+
+_FRAMEWORK_UPGRADE_STARTED = False   # once per game process, across reloads
+
+
 class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                       LanguageMixin, PayloadMixin, ResolveMixin):
     __author__ = "Voyagers Haven"
     __version__ = __version__
     __description__ = "Haven Extractor 2.0 — web-controlled capture agent (havenmap.online/extractor)"
+
+    # State that survives a pyMHF reload lives on self.persist (see HavenPersist).
+    _captured_planets = _persisted("captured_planets")
+    _batch_systems = _persisted("batch_systems")
+    _enqueued_glyphs = _persisted("enqueued_glyphs")
+    _refused_glyphs = _persisted("refused_glyphs")
+    _current_system_coords = _persisted("current_system_coords")
+    _current_system_snapshot = _persisted("current_system_snapshot")
+    _snapshot_identity_seed = _persisted("snapshot_identity_seed")
+    _capture_enabled = _persisted("capture_enabled")
+    _system_saved_to_batch = _persisted("system_saved_to_batch")
+    _pending_extraction = _persisted("pending_extraction")
+    _cached_solar_system = _persisted("cached_solar_system")
+    _cached_sys_data_addr = _persisted("cached_sys_data_addr")
+    _game_mode = _persisted("game_mode")
+    events = _persisted("events")
 
     # Fallback level maps (verbatim v1 class attrs; used by planet capture)
     FLORA_LEVELS = {0: "None", 1: "Sparse", 2: "Average", 3: "Bountiful"}
@@ -75,6 +144,10 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
 
     def __init__(self):
         super().__init__()
+        # Must exist before any persisted attribute is touched. On a reload pyMHF
+        # replaces this object with the one from the previous instance.
+        self.persist = HavenPersist()
+        self._shut_down = False
 
         # ---- capture state buckets (verbatim v1 semantics) ----------------
         self._captured_planets = {}
@@ -138,9 +211,11 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                 f"this extractor needs {self._framework_detail.get('nmspy_pin')} "
                 f"(pymhf {self._framework_detail.get('pymhf')} / needs "
                 f"{self._framework_detail.get('pymhf_pin')}). Captures are HELD, not "
-                f"uploaded. Close the game and start it with RUN_HAVEN_EXTRACTOR.bat — "
-                f"the launcher installs the right version.",
+                f"uploaded. Installing the right version in the background now — "
+                f"restart the game when told.",
                 level="error", coalesce_key="framework-mismatch")
+            threading.Thread(target=self._framework_self_upgrade,
+                             name="HavenFrameworkUpgrade", daemon=True).start()
 
         self.events.emit("SESSION", f"Haven Extractor v{__version__} loading")
         self._load_adjective_cache()
@@ -172,6 +247,89 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
 
         self._status_display = "Ready (pending hook check)"
         logger.info(f"Haven Extractor v{__version__} loaded — readiness check pending")
+
+    # ------------------------------------------------ framework self-upgrade
+
+    def _framework_self_upgrade(self):
+        """First start after a patch on an old install: the old launcher already
+        started the game with the old framework, so do the pip step here, in the
+        background, and tell the player to restart. Makes the second start a plain
+        restart (no download) whichever bat they use. Once per game process."""
+        global _FRAMEWORK_UPGRADE_STARTED
+        if _FRAMEWORK_UPGRADE_STARTED:
+            return
+        _FRAMEWORK_UPGRADE_STARTED = True
+        needs = framework_needs()
+        if not needs:
+            return
+        exe = embedded_python_exe()
+        if exe is None:
+            self.events.emit("HEALTH", "Framework update: could not locate the embedded "
+                                       "python.exe — restart via RUN_HAVEN_EXTRACTOR.bat "
+                                       "to let the launcher install it.", level="error",
+                             coalesce_key="framework-upgrade")
+            return
+        cmd = pip_upgrade_command(exe, needs)
+        self.events.emit("HEALTH", f"Framework update installing ({', '.join(needs)}) — "
+                                   f"keep playing, this takes about a minute.",
+                         coalesce_key="framework-upgrade")
+        logger.info(f"[FRAMEWORK] {' '.join(cmd)}")
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
+                                    creationflags=flags)
+        except Exception as e:
+            logger.error(f"[FRAMEWORK] upgrade could not run: {e}")
+            self.events.emit("HEALTH", f"Framework update failed to run ({e}). Restart via "
+                                       f"RUN_HAVEN_EXTRACTOR.bat to retry.", level="error",
+                             coalesce_key="framework-upgrade")
+            return
+        tail = (result.stdout or "").strip().splitlines()[-3:]
+        logger.info(f"[FRAMEWORK] pip exit {result.returncode}: {' | '.join(tail)}")
+        if result.returncode == 0:
+            self.events.emit("HEALTH", "Framework updated. RESTART THE GAME (close it, run "
+                                       "RUN_HAVEN_EXTRACTOR.bat) to start uploading again.",
+                             level="warning", coalesce_key="framework-upgrade")
+        else:
+            err = (result.stderr or "").strip().splitlines()[-1:] or ["no output"]
+            self.events.emit("HEALTH", f"Framework update FAILED: {err[0][:160]}. Check your "
+                                       f"internet connection and restart via "
+                                       f"RUN_HAVEN_EXTRACTOR.bat to retry.", level="error",
+                             coalesce_key="framework-upgrade")
+
+    # ------------------------------------------------------ reload (website)
+
+    def _shutdown_background(self):
+        """Stop this instance's threads and free the local API port so a reloaded
+        instance can take over. pyMHF has no unload hook, so we do it ourselves."""
+        self._shut_down = True
+        self._stop.set()
+        try:
+            if getattr(self, "local_api", None):
+                self.local_api.stop()
+        except Exception as e:
+            logger.debug(f"local api stop: {e}")
+
+    def _reload_self(self):
+        """Website 'Reload Mod': re-import this mod (and its mixins) in-game through
+        pyMHF's own reload, keeping batch/capture/terminal state via HavenPersist."""
+        self.events.emit("SESSION", "Reloading the mod (website command)…")
+        self._shutdown_background()
+        time.sleep(0.5)   # let the HTTP server release the port
+        try:
+            from pymhf.core.mod_loader import mod_manager
+            mod_manager.reload(self._mod_name, _ReloadShim())
+        except Exception as e:
+            logger.error(f"[RELOAD] failed: {e}")
+            # Reload failed: this instance is still the live one — bring it back.
+            self._shut_down = False
+            self._stop.clear()
+            try:
+                self.local_api.start(int(self.env.get("HAVEN_LOCAL_PORT", "8770")))
+            except Exception:
+                pass
+            self.events.emit("HEALTH", f"Reload failed: {e} — the running mod is unchanged.",
+                             level="error")
 
     def _migrate_1x_key(self):
         """First-run inheritance from a 1.x install (EXTRACTOR_2_0.md phase 4).
@@ -238,6 +396,10 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             pass
         self.state.update(hooks_bound=bound, hooks_expected=len(REQUIRED_HOOKS),
                           mods_loaded=mods_loaded, mods_expected=1, game_running=True)
+        try:
+            self._publish_current()   # after a reload the persisted capture is republished
+        except Exception:
+            pass
         with self._readiness_lock:
             first_report = not self._readiness_reported
             self._readiness_reported = True
@@ -270,7 +432,8 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         """Fallback timer: if the game never reaches the mode selector while we
         are watching (hot reload, mod loaded mid-session), still verify ~15s after
         load. The primary trigger is @on_fully_booted below."""
-        time.sleep(15)
+        if self._stop.wait(15):
+            return   # shut down (reloaded) before the fallback check was due
         with self._readiness_lock:
             already = self._readiness_reported
         if not already:
@@ -634,9 +797,16 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                 commands = self.sync.poll_commands()
             except SyncError:
                 continue
-            acked = []
+            acked = [cmd["id"] for cmd in commands]
+            if acked:
+                # Ack BEFORE acting: a reload replaces this loop, and the new
+                # instance must not re-poll and re-run the same command.
+                try:
+                    self.sync.ack_commands(acked)
+                except SyncError:
+                    pass
+                acked = []
             for cmd in commands:
-                acked.append(cmd["id"])
                 name = cmd.get("command")
                 if name == "sync_now":
                     if self._flush_current_system(force=True, reason="website Sync Now"):
@@ -646,9 +816,12 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                                                  "(no captured system in memory)",
                                          level="warning")
                 elif name == "refresh_mod":
+                    self._reload_self()              # real pyMHF reload, state preserved
+                    return                           # this instance's loop ends here
+                elif name == "refresh_adjectives":
                     self._refresh_requested = True   # applied on next APPVIEW (game thread)
-                    self.events.emit("SESSION", "Refresh queued — applies next time you "
-                                                "enter game view")
+                    self.events.emit("SESSION", "Adjective refresh queued — applies next "
+                                                "time you enter game view")
                 elif name == "clear_batch":
                     drained = 0
                     try:

@@ -57,6 +57,42 @@ def framework_needs(installed: dict = None, pins: dict = None) -> list:
     return needs
 
 
+def embedded_python_exe():
+    """python.exe of the interpreter that owns the installed nmspy.
+
+    Inside the game the mod runs in a Python injected into NMS.exe, so
+    sys.executable is useless there; the embedded image is the folder that
+    holds site-packages/nmspy (…/python/Lib/site-packages/nmspy -> …/python).
+    Returns None when it cannot be located — callers must then refuse to run pip.
+    """
+    import sys
+    from pathlib import Path
+    candidates = []
+    try:
+        import nmspy
+        candidates.append(Path(nmspy.__file__).resolve().parents[3] / "python.exe")
+    except Exception:
+        pass
+    for base in (getattr(sys, "base_prefix", None), getattr(sys, "prefix", None)):
+        if base:
+            candidates.append(Path(base) / "python.exe")
+    for c in candidates:
+        try:
+            if c.is_file() and c.name.lower() == "python.exe":
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def pip_upgrade_command(python_exe, needs) -> list:
+    """The one pip invocation both the launcher and the in-game self-upgrade use.
+    Both pins go in ONE transaction on purpose: nmspy 169922 + pymhf 0.2.4 is a
+    broken pairing, so a half-applied upgrade must never be possible."""
+    return [str(python_exe), "-m", "pip", "install", "--upgrade", "--no-input",
+            "--disable-pip-version-check", "--no-warn-script-location", *list(needs)]
+
+
 def framework_status() -> tuple:
     """(ok, detail) — detail is a flat dict suitable for state.deps_detail."""
     installed = installed_versions()

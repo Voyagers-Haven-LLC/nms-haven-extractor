@@ -122,8 +122,7 @@ def ensure_framework() -> bool:
     print(f"Framework update needed: {', '.join(needs)} "
           f"(installed: nmspy {installed.get('nmspy')}, pymhf {installed.get('pymhf')})")
     print("  installing into the embedded Python (this needs internet, ~30s) ...")
-    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "--no-input",
-           "--disable-pip-version-check", *needs]
+    cmd = nmspy_pin.pip_upgrade_command(sys.executable, needs)
     try:
         result = subprocess.run(cmd, timeout=900)
     except Exception as e:

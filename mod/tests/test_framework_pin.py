@@ -43,14 +43,24 @@ def main():
     ok &= check("framework_status ok flag agrees with needs list",
                 status_ok == (detail["framework_needs"] == []))
 
+    # In-game self-upgrade helpers: one pip command shape for launcher AND mod,
+    # both pins in ONE transaction (169922 + pymhf 0.2.4 is a broken pairing).
+    cmd = nmspy_pin.pip_upgrade_command(r"C:\x\python.exe", ["nmspy==178994.0", "pymhf==0.2.4"])
+    ok &= check("pip command: python -m pip install --upgrade <both pins>, non-interactive",
+                cmd[:4] == [r"C:\x\python.exe", "-m", "pip", "install"] and "--upgrade" in cmd
+                and "--no-input" in cmd and cmd[-2:] == ["nmspy==178994.0", "pymhf==0.2.4"])
+    exe = nmspy_pin.embedded_python_exe()
+    ok &= check("embedded_python_exe returns None or an existing python.exe (never guesses)",
+                exe is None or (exe.name.lower() == "python.exe" and exe.is_file()))
+
     # The launcher must read the pin AFTER the mod update and before importing pymhf.
     launcher = (MOD2 / "launcher.py").read_text(encoding="utf-8")
     i_update = launcher.index("apply_update(latest[\"patch_zip_url\"]")
     i_fw = launcher.index("ensure_framework()", i_update)
     i_run = launcher.index("from pymhf import run", i_fw)
     ok &= check("launcher order: mod update -> ensure_framework -> pymhf import/run", i_update < i_fw < i_run)
-    ok &= check("launcher installs with the running interpreter (the embedded python)",
-                'sys.executable, "-m", "pip", "install"' in launcher)
+    ok &= check("launcher installs with the running interpreter (the embedded python) via the shared helper",
+                'pip_upgrade_command(sys.executable, needs)' in launcher)
 
     # build_release stamps the sync client's UA version too (every 2.0.x release said 2.0.0-dev)
     br = (MOD2.parent / "dist" / "build_release.py").read_text(encoding="utf-8")
