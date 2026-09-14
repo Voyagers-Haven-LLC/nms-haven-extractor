@@ -75,6 +75,20 @@ ID_SIZE = 0x20  # cTkFixedString0x20
 ENGLISH_OFFSET = 0x40  # VariableSizeString for English
 
 # Adjective text ID prefixes we care about
+# Planet TYPE descriptors carry no adjective prefix. The game stores them as
+# templates keyed like "LUSH4" -> "Viridescent %PLANETCLASS%" or
+# "UI_PARADISE_PLANET" -> "Paradise %PLANETCLASS%", and fills the placeholder
+# from PLANETCLASS1..3 ("Planet" / "Moon" / "Planetoid"). Special pools (INFESTED*,
+# RUINED*, *BIOME anomalies, GASGIANT, WATERWORLD) carry no placeholder. They are
+# recognised by VALUE (the placeholder) or by the PLANETCLASS id, never by prefix.
+DESCRIPTOR_PLACEHOLDER = '%PLANETCLASS%'
+PLANETCLASS_ID_RE = re.compile(r'^PLANETCLASS\d+$')
+# Unprefixed numbered pools ("INFESTEDLUSH1" -> "Infested Paradise", "GASGIANT1",
+# "GREENBIOME6" -> "Vile Anomaly"). The same shape also covers creature-diet /
+# age pools; carrying those in an exact-id lookup cache is harmless.
+UNPREFIXED_POOL_ID_RE = re.compile(r'^[A-Z]{3,24}\d{1,2}$')
+_ID_TOKEN_RE = re.compile(rb'(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]{2,40})\x00')
+
 ADJECTIVE_PREFIXES = (
     'RARITY_', 'SENTINEL_', 'WEATHER_',
     'UI_BIOME_', 'BIOME_', 'UI_PLANET_',
@@ -121,6 +135,36 @@ class LanguageMBINParser:
         if not result:
             result = LanguageMBINParser._scan_for_ids(data, filter_prefixes)
 
+        # Planet-type descriptors are found by value, not prefix (see DESCRIPTOR_PLACEHOLDER).
+        result.update(LanguageMBINParser._scan_for_descriptors(data))
+        return result
+
+    @staticmethod
+    def _scan_for_descriptors(data: bytes) -> Dict[str, str]:
+        """Collect every entry whose English text carries %PLANETCLASS% plus the
+        PLANETCLASSn class words. Linear over the file; same entry layout the
+        prefix scanner relies on (id at entry start, English string ref at +0x40)."""
+        result = {}
+        for m in _ID_TOKEN_RE.finditer(data):
+            idx = m.start(1)
+            eng_offset = idx + ENGLISH_OFFSET
+            if eng_offset + 16 >= len(data):
+                continue
+            try:
+                str_rel = struct.unpack_from('<q', data, eng_offset)[0]
+                str_len = struct.unpack_from('<I', data, eng_offset + 8)[0]
+            except struct.error:
+                continue
+            str_abs = eng_offset + str_rel
+            if not (0 < str_len < 256 and 0 <= str_abs < len(data) - str_len):
+                continue
+            text_id = m.group(1).decode('ascii')
+            value = data[str_abs:str_abs + str_len].decode('utf-8', errors='ignore').rstrip('\x00').strip()
+            if not value or not all(c.isprintable() for c in value):
+                continue
+            if (DESCRIPTOR_PLACEHOLDER in value or PLANETCLASS_ID_RE.match(text_id)
+                    or (UNPREFIXED_POOL_ID_RE.match(text_id) and len(value) < 40 and '%' not in value)):
+                result[text_id] = value
         return result
 
     @staticmethod
@@ -306,7 +350,7 @@ class AdjectiveCacheBuilder:
     """
 
     CACHE_FILENAME = "adjective_cache.json"
-    CACHE_VERSION = 2  # Bumped from 1 to force rebuild with HGPAKtool
+    CACHE_VERSION = 3  # 3: planet-type descriptors (LUSH4 / UI_PARADISE_PLANET / PLANETCLASSn) join the cache
 
     def __init__(self, cache_dir: Path, nms_path: Path = None):
         self.cache_dir = cache_dir

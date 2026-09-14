@@ -17,6 +17,7 @@ memory at finalize time. Because these functions are pure, a frozen dict cannot 
 mutated by a later warp, which is exactly the property the smoke test verifies.
 """
 
+import re
 from collections import Counter
 from typing import Optional, List, Tuple, Dict, Any, Callable
 
@@ -25,6 +26,30 @@ from typing import Optional, List, Tuple, Dict, Any, Callable
 # a different fact from "we are in Euclid".
 GALAXY_MIN = 0
 GALAXY_MAX = 255
+
+
+_UNRESOLVED_ID_RE = re.compile(r'^[A-Z][A-Z0-9_]*$')
+
+
+def planet_type_label(description: Optional[str], planet_class: Optional[str] = '',
+                      is_moon: bool = False) -> str:
+    """Compose the planet-type label the game shows from the resolved descriptor.
+
+    The game stores descriptors as templates ("Viridescent %PLANETCLASS%") and
+    fills the placeholder from PLANETCLASS1..3 ("Planet"/"Moon"/"Planetoid");
+    special pools ("Infested Paradise", "Planetary Anomaly", "Gas Giant") have no
+    placeholder and are shown as-is. Returns '' when the descriptor is empty or
+    still an unresolved id (all caps) — never ships an id as a label.
+    """
+    desc = (description or '').strip()
+    if not desc or desc == 'None' or _UNRESOLVED_ID_RE.match(desc):
+        return ''
+    cls = (planet_class or '').strip()
+    if not cls or cls == 'None' or _UNRESOLVED_ID_RE.match(cls):
+        cls = 'Moon' if is_moon else 'Planet'
+    label = desc.replace('%PLANETCLASS%', cls)
+    label = re.sub(r'<[^>]*>', '', label)
+    return re.sub(r'\s+', ' ', label).strip()
 
 
 def decide_galaxy(candidates: List[Tuple[Optional[int], str]]) -> Tuple[Optional[int], str]:

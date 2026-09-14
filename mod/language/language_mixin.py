@@ -23,6 +23,13 @@ import nmspy.data.basic_types as basic
 
 logger = logging.getLogger("haven_extractor2")
 
+from nms_language import ADJECTIVE_PREFIXES  # noqa: E402
+
+# Ids that carry no adjective prefix but are still ids, not display text: the
+# planet-type descriptor pool ("LUSH4", "INFESTEDLUSH1", "UI_PARADISE_PLANET")
+# and the class words ("PLANETCLASS1").
+DESCRIPTOR_ID_RE = re.compile(r'^(?:[A-Z]+\d{1,2}|UI_[A-Z_]+_PLANET|PLANETCLASS\d+)$')
+
 
 class LanguageMixin:
     """Translate-hook cache + adjective cache + layered adjective resolution."""
@@ -48,10 +55,8 @@ class LanguageMixin:
             if not text_id:
                 return
 
-            # Only capture adjective-related text IDs
-            if text_id.startswith(('RARITY_', 'SENTINEL_', 'WEATHER_', 'UI_BIOME_', 'BIOME_',
-                                   'UI_PLANET_', 'UI_SENTINEL_', 'UI_WEATHER_', 'UI_FLORA_',
-                                   'UI_FAUNA_', 'UI_RARITY_')):
+            # Only capture adjective-related text IDs (+ planet-type descriptors)
+            if text_id.startswith(ADJECTIVE_PREFIXES) or DESCRIPTOR_ID_RE.match(text_id):
                 # Read the result string from the return value
                 try:
                     result_ptr = ctypes.cast(_result_, ctypes.c_char_p)
@@ -146,15 +151,9 @@ class LanguageMixin:
         if not text_id or text_id == "None":
             return "Unknown"
 
-        # Already a display string? (doesn't match internal ID patterns)
-        if not any(text_id.startswith(p) for p in [
-            'RARITY_', 'SENTINEL_', 'WEATHER_', 'UI_BIOME_', 'BIOME_',
-            'UI_PLANET_', 'UI_SENTINEL_', 'UI_WEATHER_', 'UI_FLORA_',
-            'UI_FAUNA_', 'UI_RARITY_'
-        ]):
-            return text_id
-
-        # Layer 1: Disk-based PAK/MBIN cache (primary - built from game files)
+        # Layer 1: Disk-based PAK/MBIN cache (primary - built from game files).
+        # An exact hit wins regardless of shape: planet-type descriptors ("LUSH4",
+        # "UI_PARADISE_PLANET") and class words ("PLANETCLASS1") have no prefix.
         if text_id in self._adjective_file_cache:
             return self._adjective_file_cache[text_id]
 
@@ -162,6 +161,10 @@ class LanguageMixin:
         if text_id in self._translation_cache:
             self._translation_cache_hits += 1
             return self._translation_cache[text_id]
+
+        # Already a display string? (doesn't match any internal ID pattern)
+        if not (text_id.startswith(ADJECTIVE_PREFIXES) or DESCRIPTOR_ID_RE.match(text_id)):
+            return text_id
 
         # Unresolved - return original text ID
         self._translation_cache_misses += 1

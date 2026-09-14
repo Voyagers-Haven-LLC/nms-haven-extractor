@@ -25,6 +25,7 @@ logger = logging.getLogger("haven_extractor2")
 
 from capture.offsets import *  # noqa: F401,F403
 from payload.tables import translate_resource, clean_weather_string  # noqa: F401
+from payload.extraction_core import planet_type_label
 
 
 class CaptureHooksMixin:
@@ -466,6 +467,16 @@ class CaptureHooksMixin:
                         else:
                             planet_type_display = ""
 
+                    # 2.1.0: both are text ids ("LUSH4", "PLANETCLASS1"). Resolve them through the
+                    # language cache and compose the label the game shows ("Viridescent Planet").
+                    # PlanetInfo is usually still empty on this hook; the APPVIEW refresh redoes it.
+                    if planet_description:
+                        planet_description = planet_type_label(
+                            self._resolve_adjective(planet_description, 'description'),
+                            self._resolve_adjective(planet_type_display, 'planet_class') if planet_type_display else '',
+                            is_moon,
+                        )
+
                     # v1.4.0: IsWeatherExtreme - differentiates normal vs extreme weather
                     if hasattr(info, 'IsWeatherExtreme'):
                         try:
@@ -718,6 +729,24 @@ class CaptureHooksMixin:
                         if raw and raw != "None" and len(raw) >= 2:
                             captured['weather_raw_string'] = raw
                             captured['weather_display'] = self._resolve_adjective(raw, 'weather')
+
+                    # 2.1.0: planet-type label. PlanetInfo is filled AFTER the capture hook,
+                    # so this refresh is where the descriptor actually becomes readable.
+                    if hasattr(info, 'PlanetDescription'):
+                        val = str(info.PlanetDescription) or ""
+                        raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        if raw and raw != "None" and len(raw) >= 2:
+                            cls_raw = ""
+                            if hasattr(info, 'PlanetType'):
+                                cv = str(info.PlanetType) or ""
+                                cls_raw = ''.join(c for c in cv if c.isprintable() and ord(c) < 128).strip()
+                            label = planet_type_label(
+                                self._resolve_adjective(raw, 'description'),
+                                self._resolve_adjective(cls_raw, 'planet_class') if cls_raw else '',
+                                bool(captured.get('is_moon')),
+                            )
+                            if label:
+                                captured['planet_description'] = label
 
                     refreshed += 1
                 except Exception:
