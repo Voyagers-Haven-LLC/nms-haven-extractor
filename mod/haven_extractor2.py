@@ -401,12 +401,25 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                              f"{system.get('galaxy_name') or 'galaxy resolving…'}")
         else:
             self.state.update(current_system=system or None)
+            # The live snapshot publishes the SAME planet shape the upload ships
+            # (_planet_from_captured -> build_planet_entry): game display adjectives
+            # for flora/fauna/sentinel/weather, cleaned weather, translated resources.
+            # It used to copy the raw captured dict, whose flora/fauna/sentinel/
+            # weather are the game's enum LEVEL words (Bountiful/Limited/Clear), so
+            # the website's Current System view disagreed with the pending submission
+            # (High/Attentive/Blissful). One builder, one set of words.
             planets = []
-            for p in self._captured_planets.values():
-                q = dict(p)
-                q.setdefault("sentinel_level", q.get("sentinel"))
-                q.setdefault("flora_level", q.get("flora"))
-                q.setdefault("fauna_level", q.get("fauna"))
+            for idx, p in enumerate(self._captured_planets.values()):
+                try:
+                    q = self._planet_from_captured(p, idx)
+                except Exception as e:
+                    logger.debug(f"[2.1] snapshot planet build failed, publishing raw capture: {e}")
+                    q = dict(p)
+                    q.setdefault("sentinel_level", q.get("sentinel_display") or q.get("sentinel"))
+                    q.setdefault("flora_level", q.get("flora_display") or q.get("flora"))
+                    q.setdefault("fauna_level", q.get("fauna_display") or q.get("fauna"))
+                if not q.get("planet_name"):
+                    q["planet_name"] = p.get("planet_name")
                 planets.append(q)
             known = {x.get("planet_name") for x in self.state.current_planets}
             fresh = [q for q in planets
