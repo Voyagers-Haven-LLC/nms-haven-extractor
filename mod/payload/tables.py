@@ -115,26 +115,9 @@ RESOURCE_NAMES = {
     "UI_GRAV_HINT": "Gravitino Balls",
 }
 
-# v1.4.5: Biome -> plant resource mapping (what the game discovery screen shows)
-# Dead, Airless, Exotic, and Weird biomes have no plant resource
-BIOME_PLANT_RESOURCE = {
-    "Frozen": "Frost Crystal",
-    "Barren": "Cactus Flesh",
-    "Scorched": "Solanium",
-    "Toxic": "Fungal Mould",
-    "Radioactive": "Gamma Root",
-    "Lush": "Star Bulb",
-    "Swamp": "Faecium",
-    "Lava": "Solanium",
-    "Waterworld": "Kelp Sac",
-}
-
-# v1.6.8: Biome subtypes that override the main biome's plant resource
-# e.g., a Lush planet with Swamp subtype should get Faecium, not Star Bulb
-BIOME_SUBTYPE_PLANT_OVERRIDE = {
-    "Swamp": "Faecium",
-    "Lava": "Solanium",
-}
+# 2.1.1: the biome->plant tables are gone. Resources come from the game's own
+# PlanetInfo.Resources line (payload/extraction_core.parse_game_resources); the
+# table's Lava/Swamp/Waterworld rows were guesses the human data contradicted.
 
 # v1.4.5: Internal substance IDs that don't appear on the discovery screen
 # Dead/Airless moons have SPACEGUNK internally but show Rusted Metal to the player

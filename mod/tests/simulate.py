@@ -211,7 +211,6 @@ class Simulator:
         def builder(c, idx):
             return build_planet_entry(
                 c, idx, translate_resource=identity,
-                biome_plant_resource={}, biome_subtype_plant_override={},
                 hidden_substance_names=(), hidden_substance_ids=(),
                 clean_weather=identity)
 

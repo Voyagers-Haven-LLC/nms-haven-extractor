@@ -417,6 +417,7 @@ class CaptureHooksMixin:
             planet_description = ""       # v1.4.0: Biome adjective text ID
             planet_type_display = ""      # v1.4.0: Planet type display string
             is_weather_extreme = False    # v1.4.0: Extreme weather flag
+            resources_raw = ""            # 2.1.1: PlanetInfo.Resources, the game's own list
             try:
                 if hasattr(planet_data, 'PlanetInfo'):
                     info = planet_data.PlanetInfo
@@ -471,6 +472,16 @@ class CaptureHooksMixin:
                             logger.info(f"    [DISPLAY] Weather: '{weather_display}'")
                         else:
                             weather_display = ""
+
+                    # 2.1.1: the resource line the discovery page shows. Usually still empty on
+                    # this hook (PlanetInfo fills at APPVIEW); the export refresh re-reads it.
+                    if hasattr(info, 'Resources'):
+                        val = str(info.Resources) or ""
+                        resources_raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        if resources_raw and resources_raw != "None":
+                            logger.info(f"    [DISPLAY] Resources: '{resources_raw}'")
+                        else:
+                            resources_raw = ""
 
                     # v1.4.0: PlanetDescription - biome adjective text ID (e.g., "Paradise Planet")
                     if hasattr(info, 'PlanetDescription'):
@@ -575,6 +586,7 @@ class CaptureHooksMixin:
                 'planet_description': planet_description,      # v1.4.0: Biome adjective text ID
                 'planet_type_display': planet_type_display,    # v1.4.0: Planet type display string
                 'is_weather_extreme': is_weather_extreme,      # v1.4.0: Extreme weather flag
+                'resources_raw': resources_raw,                # 2.1.1: the game's own resource line
                 'extra_resource_hints': extra_resource_hints,  # v1.4.5: Special resource hint IDs
                 'has_scrap': has_scrap,                        # v1.4.5: HasScrap boolean
                 'has_rings': has_rings,                        # 2.1.1: cGcPlanetData.Rings.HasRings
@@ -598,21 +610,21 @@ class CaptureHooksMixin:
                     self._captured_planets[planet_key]['gravitino_balls'] = 1
                 if "vile brood" in translated_lower or "whispering egg" in translated_lower or hint_upper in ("INFESTATION", "VILEBROOD", "LARVA", "LARVAL", "UI_BUGS_HINT"):
                     self._captured_planets[planet_key]['vile_brood'] = 1
-            # 2.1.1: exotic (Weird) planets — the glitch collectible rides in the hints.
-            # Logged at INFO so real captures record the hint id per subtype (the
-            # resource table only translates ids it has been taught).
-            if biome_raw == 7:  # cGcBiomeType.Weird
-                logger.info(f"    [HINTS] exotic planet '{planet_name}' subtype={biome_subtype_raw} hint ids: {extra_resource_hints}")
+            # 2.1.1: the raw hint ids, at INFO for every planet that has any, so real
+            # captures record what the game actually uses (no hint id had ever been
+            # logged; the resource table only translates ids it has been taught).
+            if extra_resource_hints:
+                logger.info(f"    [HINTS] '{planet_name}' biome={biome_raw} subtype={biome_subtype_raw} hint ids: {extra_resource_hints}")
+            if biome_raw == 7:  # cGcBiomeType.Weird: the glitch collectible rides in the hints
                 for hint_id in extra_resource_hints:
                     trophy = translate_resource(hint_id.upper())
                     if trophy in EXOTIC_TROPHIES:
                         self._captured_planets[planet_key]['exotic_trophy'] = trophy
                         break
-            # v1.4.6: HasScrap from hook time is unreliable (struct offset may have shifted
-            # in Worlds Part 1 update, causing false positives). Scrap detection is now
-            # handled at extraction time in _extract_single_planet instead.
+            # 2.1.1: HasScrap is a typed read of cGcPlanetData now (the 1.4.6 note deferred
+            # it to an extraction function that no longer exists, so scrap was never set).
             if has_scrap:
-                logger.debug(f"    [HINTS] HasScrap=True (hook time, deferred to extraction)")
+                self._captured_planets[planet_key]['salvageable_scrap'] = 1
             # Infested biome subtype
             if biome_subtype_name and biome_subtype_name.lower() == "infested":
                 self._captured_planets[planet_key]['infested'] = 1
@@ -768,6 +780,16 @@ class CaptureHooksMixin:
                         if raw and raw != "None" and len(raw) >= 2:
                             captured['weather_raw_string'] = raw
                             captured['weather_display'] = self._resolve_adjective(raw, 'weather')
+
+                    # 2.1.1: the resource line (see the capture hook); this is where it is
+                    # actually filled. Logged at INFO on the first read so the format is known.
+                    if hasattr(info, 'Resources'):
+                        val = str(info.Resources) or ""
+                        raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        if raw and raw != "None":
+                            if not captured.get('resources_raw'):
+                                logger.info(f"    [EXPORT] Resources for '{memory_name}': '{raw}'")
+                            captured['resources_raw'] = raw
 
                     # 2.1.0: planet-type label. PlanetInfo is filled AFTER the capture hook,
                     # so this refresh is where the descriptor actually becomes readable.

@@ -98,23 +98,71 @@ _PLANET_FLAGS = ("ancient_bones", "salvageable_scrap", "storm_crystals",
 _RESOURCE_KEYS = ("common_resource", "uncommon_resource", "rare_resource")
 
 
+# The game's own resource line names the special collectibles alongside the
+# substances; Haven stores those as attributes, not materials (resource_catalog
+# NON_MATERIAL_TOKENS on the backend). Keys are lower-case display names.
+FLAG_BY_RESOURCE_NAME = {
+    "ancient bones": "ancient_bones", "ancient bone": "ancient_bones",
+    "salvageable scrap": "salvageable_scrap", "salvagable scrap": "salvageable_scrap",
+    "storm crystals": "storm_crystals", "storm crystal": "storm_crystals",
+    "gravitino balls": "gravitino_balls", "gravitino ball": "gravitino_balls",
+    "whispering eggs": "vile_brood", "vile brood": "vile_brood", "vile brood detected": "vile_brood",
+}
+_RESOURCE_SPLIT_RE = re.compile(r"\s*(?:,|;|\n|\|)\s*")
+_RESOURCE_ID_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def parse_game_resources(raw: Optional[str], translate: Callable[[str], str]) -> Tuple[List[str], Dict[str, int]]:
+    """Turn the game's PlanetInfo.Resources line into (resource names, attribute flags).
+
+    2.1.1: the list the player sees on the discovery page IS the truth for a
+    planet's resources — the old biome->plant table was a guess that the human
+    data on prod contradicts for Lava (5% agreement), Swamp (41%) and Waterworld
+    (0%). Tokens that are still ids (all caps) go through ``translate`` (the
+    substance table); markup is stripped; the special collectibles become flags
+    and leave the list; order is kept; duplicates dropped. Empty input -> ([], {}).
+    """
+    names: List[str] = []
+    flags: Dict[str, int] = {}
+    seen = set()
+    text = re.sub(r"<br\s*/?>", "\n", str(raw or ""), flags=re.IGNORECASE)   # a line-break tag separates items
+    for tok in _RESOURCE_SPLIT_RE.split(text):
+        tok = re.sub(r"<[^>]*>", "", tok).strip(" .:-\t")
+        if not tok or tok == "None":
+            continue
+        if _RESOURCE_ID_RE.match(tok):
+            tok = translate(tok) or tok
+        flag = FLAG_BY_RESOURCE_NAME.get(tok.lower())
+        if flag:
+            flags[flag] = 1
+            continue
+        if tok.lower() in seen:
+            continue
+        seen.add(tok.lower())
+        names.append(tok)
+    return names, flags
+
+
 def build_planet_entry(
     captured: Dict[str, Any],
     index: int,
     *,
     translate_resource: Callable[[str], str],
-    biome_plant_resource: Dict[str, str],
-    biome_subtype_plant_override: Dict[str, str],
     hidden_substance_names: Any,
     hidden_substance_ids: Any,
     clean_weather: Optional[Callable[[str], str]] = None,
 ) -> Dict[str, Any]:
     """Build one planet payload entry from a captured-planet dict.
 
-    Resource translation, hidden-substance fix and plant-resource derivation are carried
-    over verbatim from the prior ``_planet_from_captured``. This is a pure function
-    (game-memory reads are done by the caller), so the same builder serves the live
-    system AND every already-frozen batched system.
+    Resource translation and the hidden-substance fix are carried over verbatim
+    from the prior ``_planet_from_captured``. This is a pure function (game-memory
+    reads are done by the caller), so the same builder serves the live system AND
+    every already-frozen batched system.
+
+    2.1.1: ``resources`` (the game's own discovery-page list, see
+    parse_game_resources) replaces the biome->plant derivation, and the special
+    collectibles on that list become the attribute flags. ``salvageable_scrap``
+    also comes from the typed cGcPlanetData.HasScrap flag.
 
     Adjective display strings (the Odusto 2026-06-17 bug): NMS exposes the EXACT
     weather/sentinel/flora/fauna adjectives ("Superheated Drizzle", "Observant",
@@ -173,6 +221,8 @@ def build_planet_entry(
     for flag in _PLANET_FLAGS:
         if captured.get(flag):
             result[flag] = captured[flag]
+    if captured.get('has_scrap'):
+        result["salvageable_scrap"] = 1        # typed cGcPlanetData.HasScrap (2.1.1)
 
     # Translate resource IDs to display names.
     for res_key in _RESOURCE_KEYS:
@@ -185,13 +235,15 @@ def build_planet_entry(
         if result[res_key] in hidden_substance_names or result[res_key] in hidden_substance_ids:
             result[res_key] = "Rusted Metal"
 
-    # Derive plant_resource from biome (only if the planet actually has flora).
-    biome = result.get("biome", "Unknown")
-    biome_subtype = result.get("biome_subtype", "Unknown")
-    plant_resource = (biome_subtype_plant_override.get(biome_subtype, "")
-                      or biome_plant_resource.get(biome, ""))
-    if plant_resource and captured.get('flora_raw', -1) > 0:
-        result["plant_resource"] = plant_resource
+    # 2.1.1: the game's own resource line. Shipped as ``resources`` (ordered
+    # names) only when it was read; the backend falls back to the substances
+    # when it is absent. The special collectibles on it become flags.
+    names, flags = parse_game_resources(captured.get('resources_raw'), translate_resource)
+    if names or flags:
+        result["resources"] = ["Rusted Metal" if (n in hidden_substance_names or n in hidden_substance_ids) else n
+                               for n in names]
+        for flag, v in flags.items():
+            result[flag] = v
 
     return result
 

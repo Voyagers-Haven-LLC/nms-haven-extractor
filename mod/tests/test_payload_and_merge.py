@@ -38,7 +38,6 @@ def main():
     entry = build_planet_entry(
         captured, 0, translate_resource=lambda v: v,
         hidden_substance_names=set(), hidden_substance_ids=set(),
-        biome_plant_resource={}, biome_subtype_plant_override={},
     )
     ok &= check("weather ships the display adjective ('Refreshing Breeze')",
                 entry["weather"] == "Refreshing Breeze")
@@ -55,7 +54,6 @@ def main():
     entry2 = build_planet_entry(
         bare, 1, translate_resource=lambda v: v,
         hidden_substance_names=set(), hidden_substance_ids=set(),
-        biome_plant_resource={}, biome_subtype_plant_override={},
     )
     ok &= check("negative control: unobserved fields absent from payload (not fabricated)",
                 "extreme_weather" not in entry2 and "storm_frequency" not in entry2

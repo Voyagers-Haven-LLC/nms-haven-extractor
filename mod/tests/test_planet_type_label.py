@@ -42,12 +42,10 @@ def main():
 
     # the payload carries it as `description` (what the site renders as the type)
     e = build_planet_entry({'planet_name': 'X', 'biome': 'Lush', 'planet_description': 'Viridescent Planet', 'is_moon': False},
-                           0, translate_resource=lambda v: v, hidden_substance_names=set(), hidden_substance_ids=set(),
-                           biome_plant_resource={}, biome_subtype_plant_override={})
+                           0, translate_resource=lambda v: v, hidden_substance_names=set(), hidden_substance_ids=set())
     ok &= check("payload ships the label as description", e.get('description') == 'Viridescent Planet')
     e2 = build_planet_entry({'planet_name': 'X', 'biome': 'Lush', 'planet_description': '', 'is_moon': False},
-                            0, translate_resource=lambda v: v, hidden_substance_names=set(), hidden_substance_ids=set(),
-                            biome_plant_resource={}, biome_subtype_plant_override={})
+                            0, translate_resource=lambda v: v, hidden_substance_names=set(), hidden_substance_ids=set())
     ok &= check("no descriptor -> no description key (not fabricated)", 'description' not in e2)
 
     # cache builder: the descriptor scanner recognises the template by VALUE and the class ids by shape

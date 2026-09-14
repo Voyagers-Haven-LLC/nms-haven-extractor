@@ -15,7 +15,6 @@ logger = logging.getLogger("haven_extractor2")
 from payload.extraction_core import (build_planet_entry, build_planet_list,
     build_system_payload, galaxy_is_known)
 from payload.tables import (translate_resource, clean_weather_string,
-    BIOME_PLANT_RESOURCE, BIOME_SUBTYPE_PLANT_OVERRIDE,
     HIDDEN_SUBSTANCE_IDS, HIDDEN_SUBSTANCE_NAMES)
 
 
@@ -115,14 +114,12 @@ class PayloadMixin:
         Thin wrapper over the pure extraction_core.build_planet_entry() (which the smoke
         test exercises directly). Captured data was gathered while the system was active in
         memory, so it's authoritative for the batched system's planets; no live read here.
-        Resource translation, hidden-substance fix and plant-resource derivation are carried
-        over verbatim by the core function.
+        Resource translation and the hidden-substance fix are carried over verbatim by
+        the core function; resources come from the game's own line (2.1.1).
         """
         return build_planet_entry(
             captured, index,
             translate_resource=translate_resource,
-            biome_plant_resource=BIOME_PLANT_RESOURCE,
-            biome_subtype_plant_override=BIOME_SUBTYPE_PLANT_OVERRIDE,
             hidden_substance_names=HIDDEN_SUBSTANCE_NAMES,
             hidden_substance_ids=HIDDEN_SUBSTANCE_IDS,
             clean_weather=clean_weather_string,
@@ -181,14 +178,36 @@ class PayloadMixin:
         for i, p in enumerate(planets):
             p_name = p.get('planet_name', f'Planet_{i+1}')
             moon = " (moon)" if p.get('is_moon', False) else ""
-            biome = p.get('biome', 'Unknown')
+            biome = p.get('description') or p.get('biome', 'Unknown')
             flora = p.get('flora_level', '?')
             fauna = p.get('fauna_level', '?')
             sentinel = p.get('sentinel_level', '?')
 
             # Align columns
             label = f"{p_name}{moon}"
-            logger.info(f"  [{i+1}/{total}] {label:<24s} {biome:<14s} Flora: {flora:<12s} Fauna: {fauna:<12s} Sentinel: {sentinel}")
+            logger.info(f"  [{i+1}/{total}] {label:<24s} {biome:<20s} Flora: {flora:<12s} Fauna: {fauna:<12s} Sentinel: {sentinel}")
+            # 2.1.1: the second line is what the player checks against the game's
+            # discovery page — the resource list as the game shows it, then the
+            # attributes we read. "not read" marks a typed field that was not read.
+            if p.get('resources') is not None:
+                res = ", ".join(p['resources']) or "(empty)"
+            else:
+                res = ", ".join(v for v in (p.get('common_resource'), p.get('uncommon_resource'), p.get('rare_resource'))
+                                if v and v != 'Unknown') + "  (game line not read)"
+            attrs = []
+            for key, word in (('has_rings', 'Rings'), ('water_world', 'Water world'), ('is_dissonant', 'Dissonant'),
+                              ('infested', 'Infested'), ('ancient_bones', 'Ancient Bones'),
+                              ('salvageable_scrap', 'Salvageable Scrap'), ('vile_brood', 'Vile Brood'),
+                              ('storm_crystals', 'Storm Crystals'), ('gravitino_balls', 'Gravitino Balls')):
+                if p.get(key):
+                    attrs.append(word)
+            if p.get('exotic_trophy'):
+                attrs.append(f"Trophy: {p['exotic_trophy']}")
+            unread = [w for k, w in (('has_rings', 'rings'), ('water_world', 'water'), ('is_dissonant', 'dissonant'))
+                      if k not in p]
+            tail = f" | {', '.join(attrs)}" if attrs else ""
+            tail += f" | not read: {', '.join(unread)}" if unread else ""
+            logger.info(f"        Resources: {res}{tail}")
 
         logger.info(f"=== Saved to batch ({batch_count} total) ===")
         logger.info("")

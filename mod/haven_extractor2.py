@@ -384,6 +384,9 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             names = registry_names(hook_manager)
         except Exception as e:
             logger.warning(f"readiness check could not read hook registry: {e}")
+        if names is not None and not getattr(self, "_hooks_logged", False):
+            self._hooks_logged = True
+            logger.info(f"readiness: hooks bound in pyMHF registry: {sorted(names)}")
         failed = unbound_required_hooks(names, REQUIRED_HOOKS)
         if failed is None:
             failed = []
@@ -718,6 +721,16 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                 time.sleep(10)
                 continue
             name = payload.get("system_name") or payload.get("glyph_code")
+            # 2.1.1: stamp game mode / reality at SEND time. The difficulty preset
+            # arrives with the first autosave, which is usually after the system was
+            # staged at APPVIEW; stamping here picks it up when it beat the upload.
+            try:
+                gm = self._detect_game_mode()
+                if gm:
+                    payload["game_mode"] = gm
+                payload["reality"] = self._reality()
+            except Exception as e:
+                logger.debug(f"[GAME_MODE] send-time stamp skipped: {e}")
             try:
                 result = self.sync.stage(payload)
                 self._journal_remove(payload.get("glyph_code"))
