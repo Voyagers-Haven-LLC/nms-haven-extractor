@@ -65,20 +65,19 @@ def embedded_python_exe():
     holds site-packages/nmspy (…/python/Lib/site-packages/nmspy -> …/python).
     Returns None when it cannot be located — callers must then refuse to run pip.
     """
-    import sys
     from pathlib import Path
-    candidates = []
     try:
         import nmspy
-        candidates.append(Path(nmspy.__file__).resolve().parents[3] / "python.exe")
+        site = Path(nmspy.__file__).resolve().parents[1]      # .../Lib/site-packages
     except Exception:
-        pass
-    for base in (getattr(sys, "base_prefix", None), getattr(sys, "prefix", None)):
-        if base:
-            candidates.append(Path(base) / "python.exe")
-    for c in candidates:
+        return None
+    root = site.parents[1]                                     # .../python  (or a venv root)
+    # Only interpreters whose site-packages IS the one holding nmspy. Never fall
+    # back to sys.prefix/base_prefix: under a venv that is the system Python, and
+    # pip-installing the pin there would touch the wrong interpreter.
+    for c in (root / "python.exe", root / "Scripts" / "python.exe"):
         try:
-            if c.is_file() and c.name.lower() == "python.exe":
+            if c.is_file():
                 return c
         except OSError:
             continue

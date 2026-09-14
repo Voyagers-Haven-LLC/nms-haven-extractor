@@ -52,6 +52,18 @@ def main():
     exe = nmspy_pin.embedded_python_exe()
     ok &= check("embedded_python_exe returns None or an existing python.exe (never guesses)",
                 exe is None or (exe.name.lower() == "python.exe" and exe.is_file()))
+    if exe is not None:
+        # The interpreter it names must be the one that owns the installed nmspy —
+        # pip-installing the pin anywhere else would be exactly the wrong machine.
+        import subprocess
+        probe = subprocess.run([str(exe), "-c", "import nmspy, os; print(os.path.dirname(nmspy.__file__))"],
+                               capture_output=True, text=True, env={**__import__('os').environ, "PYTEST_VERSION": "1"})
+        try:
+            import nmspy as _n
+            same = probe.returncode == 0 and Path(probe.stdout.strip()).resolve() == Path(_n.__file__).resolve().parent
+        except Exception:
+            same = False
+        ok &= check(f"that interpreter ({exe}) owns THIS nmspy install", same)
 
     # The launcher must read the pin AFTER the mod update and before importing pymhf.
     launcher = (MOD2 / "launcher.py").read_text(encoding="utf-8")
