@@ -318,28 +318,10 @@ class CaptureHooksMixin:
             except Exception as e:
                 logger.debug(f"    [HINTS] ExtraResourceHints read failed: {e}")
 
-            # v1.4.6: Direct memory read fallback for ExtraResourceHints
-            # cTkDynamicArray layout: pointer(8) + count(4) + capacity(4) = 16 bytes
-            # cGcPlanetDataResourceHint: Hint TkID(16) + Icon TkID(16) = 32 bytes per element
-            # 2.1.0: the field offset comes from the framework's generated struct
-            # (was a hardcoded 0x3310 that Cosmos moved to 0x33F0).
-            if not extra_resource_hints and planet_data_addr:
-                try:
-                    hints_offset = nmse.cGcPlanetData.ExtraResourceHints.offset
-                    arr_ptr = self._read_uint64(planet_data_addr, hints_offset)
-                    arr_count = self._read_uint32(planet_data_addr, hints_offset + 8)
-                    if arr_ptr and arr_ptr > 0x10000 and 0 < arr_count <= 10:
-                        logger.info(f"    [HINTS-DIRECT] Found {arr_count} hints at {hints_offset:#x}")
-                        for hi in range(arr_count):
-                            elem_addr = arr_ptr + (hi * 32)  # 32 bytes per element
-                            hint_str = self._read_string(elem_addr, 0, max_len=16)
-                            if hint_str:
-                                logger.info(f"    [HINTS-DIRECT] [{hi}] Hint='{hint_str}'")
-                                extra_resource_hints.append(hint_str)
-                        if extra_resource_hints:
-                            logger.info(f"    [HINTS-DIRECT] Read {len(extra_resource_hints)} hints via direct memory")
-                except Exception as e:
-                    logger.info(f"    [HINTS-DIRECT] Direct memory fallback failed: {e}")
+            # 2.1.1: the hand-rolled 32-byte stride over ExtraResourceHints is gone.
+            # cTkDynamicArray supports len()/indexing/iteration against the generated
+            # struct (proved headless in tests/test_dynamic_array.py), and the fallback
+            # never fired once in any captured session.
 
             # Extract weather from cGcPlanetData.Weather.WeatherType
             # This uses the actual Weather structure (offset 0x1C00) with enum values

@@ -176,48 +176,15 @@ class SystemReadMixin:
             "system_seed": 0,
         }
 
-        # =====================================================
-        # Get system name from mGameState notification string
-        # The game stores "In the {system_name} system" at offset 0x38
-        # =====================================================
-        try:
-            game_state = gameData.game_state
-            if game_state:
-                game_state_addr = get_addressof(game_state)
-                if game_state_addr and game_state_addr != 0:
-                    notification_str = self._read_string(game_state_addr, 0x38, max_len=256)
-                    if notification_str:
-                        match = re.match(r"In the (.+) system", notification_str)
-                        if match:
-                            extracted_name = match.group(1).strip()
-                            if extracted_name:
-                                result["system_name"] = extracted_name
-                                logger.info(f"  System name: '{extracted_name}'")
-        except Exception as e:
-            logger.debug(f"System name extraction failed: {e}")
-
-        # Star color mapping (enum names to clean values)
-        # Struct fallback mapping (enum name strings from NMS.py → clean color names)
-        # Numeric keys match cGcGalaxyStarTypes enum: Yellow=0, Green=1, Blue=2, Red=3, Purple=4
-        STAR_COLOR_MAP = {
-            'Yellow': 'Yellow', 'Yellow_': 'Yellow', 'yellow': 'Yellow', '0': 'Yellow',
-            'Green': 'Green', 'Green_': 'Green', 'green': 'Green', '1': 'Green',
-            'Blue': 'Blue', 'Blue_': 'Blue', 'blue': 'Blue', '2': 'Blue',
-            'Red': 'Red', 'Red_': 'Red', 'red': 'Red', '3': 'Red',
-            'Purple': 'Purple', 'Purple_': 'Purple', 'purple': 'Purple', '4': 'Purple',
-            'Default': 'Yellow', 'Default_': 'Yellow',  # Default is Yellow
-        }
-
-        # Dominant lifeform mapping (enum names to clean values)
-        LIFEFORM_MAP = {
-            'Traders': 'Gek', 'Traders_': 'Gek', 'Gek': 'Gek', '0': 'Gek',
-            'Warriors': "Vy'keen", 'Warriors_': "Vy'keen", "Vy'keen": "Vy'keen", 'Vykeen': "Vy'keen", '1': "Vy'keen",
-            'Explorers': 'Korvax', 'Explorers_': 'Korvax', 'Korvax': 'Korvax', '2': 'Korvax',
-            'Robots': 'None', 'Robots_': 'None', '3': 'None',
-            'Atlas': 'None', 'Atlas_': 'None', '4': 'None',
-            'Diplomats': 'None', 'Diplomats_': 'None', '5': 'None',
-            'None': 'None', 'None_': 'None', '6': 'None',
-        }
+        # 2.1.1: the "In the {name} system" notification read (a hand offset of 0x38
+        # into game_state) is gone — it never resolved a name in any captured session,
+        # and cGcSolarSystemData.Name is read through the generated struct below.
+        #
+        # The 1.x STAR_COLOR_MAP / LIFEFORM_MAP fallback tables are gone too. They were
+        # stale duplicates of capture/offsets.py: LIFEFORM_MAP still said race 6 was
+        # "None" after 2.1.1 made it Exotics, and had no entry for 8 (Autophage), while
+        # STAR_COLOR_MAP laundered the unrelated cGcSolarSystemClass "Default" into
+        # "Yellow". Display vocabulary now has exactly one source.
 
         # v1.6.10: Direct-offset reads as primary (resilient to NMS struct shifts).
         # Wires up the previously-dead _read_system_data_direct helper.
@@ -260,6 +227,8 @@ class SystemReadMixin:
                     result["dominant_lifeform"] = direct["dominant_lifeform"]
                 if direct.get("system_name") and not result["system_name"]:
                     result["system_name"] = direct["system_name"]
+                if direct.get("system_seed"):
+                    result["system_seed"] = direct["system_seed"]
             except Exception as e:
                 logger.debug(f"  Direct system read failed: {e}")
 
@@ -269,40 +238,17 @@ class SystemReadMixin:
         # silently laundering every failed/stale read into a wrong answer. Removed:
         # an unresolved star colour now stays "Unknown" (honest absence).
 
-        # Economy / conflict / lifeform struct fallbacks are SKIPPED for no-data systems —
-        # the struct fields read the same memory and would fabricate plausible-looking values.
-        if not system_no_data:
-            try:
-                if hasattr(sys_data, 'TradingData'):
-                    trading = sys_data.TradingData
-                    if _is_unresolved(result["economy_type"]) and hasattr(trading, 'TradingClass'):
-                        result["economy_type"] = self._safe_enum(trading.TradingClass)
-                    if _is_unresolved(result["economy_strength"]) and hasattr(trading, 'WealthClass'):
-                        result["economy_strength"] = self._safe_enum(trading.WealthClass)
-                    if _is_unresolved(result["conflict_level"]) and hasattr(trading, 'ConflictLevel'):
-                        result["conflict_level"] = self._safe_enum(trading.ConflictLevel)
-            except Exception:
-                pass
-
-            try:
-                if _is_unresolved(result["conflict_level"]) and hasattr(sys_data, 'ConflictData'):
-                    result["conflict_level"] = self._safe_enum(sys_data.ConflictData)
-            except Exception:
-                pass
-
-            try:
-                if hasattr(sys_data, 'InhabitingRace') and _is_unresolved(result["dominant_lifeform"]):
-                    raw_race = self._safe_enum(sys_data.InhabitingRace)
-                    result["dominant_lifeform"] = LIFEFORM_MAP.get(raw_race, LIFEFORM_MAP.get(raw_race.rstrip('_'), 'None'))
-                    logger.debug(f"  Dominant lifeform: raw='{raw_race}' -> '{result['dominant_lifeform']}'")
-            except Exception:
-                pass
-
-        try:
-            if hasattr(sys_data, 'Seed') and hasattr(sys_data.Seed, 'Seed'):
-                result["system_seed"] = self._safe_int(sys_data.Seed.Seed)
-        except Exception:
-            pass
+        # 2.1.1: the 1.x economy/conflict/lifeform fallbacks are GONE. They called
+        # _safe_enum, which returns the raw enum NAME, so whenever they fired they wrote
+        # vocabulary the catalog does not use — "HighTech"/"Fusion" into economy_type,
+        # "Poor"/"Wealthy" into a field whose scale is T1-T4, and "Default" into
+        # conflict_level. Those are exactly the bugs the 2026-08 audit found and that
+        # 2.0.3 was supposed to have fixed; they survived in this path. Since the upload
+        # sanity gate refuses any value outside the display tables, a fired fallback
+        # could only ever turn a good capture into a refused one.
+        #
+        # An unresolved field now stays "Unknown", which is honest absence and what the
+        # no_trade_data handling below already expects.
 
         # v1.6.14 (Option B): For systems NMS flags as no-data, omit the four trade/conflict/
         # lifeform fields from the payload entirely instead of sending "Unknown" strings.
