@@ -167,6 +167,17 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         self._translation_cache_hits = 0
         self._translation_cache_misses = 0
         self._adjective_file_cache = {}
+        # 2.1.1 live Translate state (language/language_mixin.py _translate_live)
+        self._lang_manager_seen = 0        # address the game passes to Translate - captured, verified
+        self._lang_types = None            # pyMHF's exact pointer classes for the call
+        self._lang_live_results = {}       # id -> display text (successes only)
+        self._lang_live_failures = 0
+        self._lang_live_disabled = False
+        self._lang_live_announced = False
+        self._lang_in_live_call = False
+        self._lang_n_live = 0
+        self._lang_n_cache = 0
+        self._lang_n_unresolved = 0
         self._capture_enabled = False
         self._batch_mode_enabled = True     # v1 flag, always on in 2.0
         self._system_saved_to_batch = False
@@ -517,6 +528,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             self._detect_game_mode()             # REVIVED (dead code in 1.x)
             if self._refresh_requested:
                 self._refresh_requested = False
+                getattr(self, "_lang_live_results", {}).clear()   # re-ask the game (language may have changed)
                 self._auto_refresh_for_export()
                 self.events.emit("SESSION", "Adjectives refreshed (website command)")
             self._drain_batch_to_sync()          # appview auto-saves the system

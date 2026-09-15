@@ -796,7 +796,11 @@ class CaptureHooksMixin:
                     pass
 
             if refreshed > 0:
-                logger.info(f"[EXPORT] Auto-refreshed adjectives for {refreshed} planet(s)")
+                logger.info(f"[EXPORT] Auto-refreshed adjectives for {refreshed} planet(s) | words resolved "
+                            f"live: {getattr(self, '_lang_n_live', 0)}, from cache: {getattr(self, '_lang_n_cache', 0)}, "
+                            f"unresolved: {getattr(self, '_lang_n_unresolved', 0)}"
+                            + (" | LIVE TRANSLATE OFF this session" if getattr(self, '_lang_live_disabled', False) else ""))
+            self._lang_n_live = self._lang_n_cache = self._lang_n_unresolved = 0
 
         except Exception as e:
             logger.warning(f"[EXPORT] Auto-refresh failed (non-fatal): {e}")
