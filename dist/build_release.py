@@ -40,7 +40,7 @@ MOD = REPO / "mod"
 DIST = REPO / "dist"
 
 # Never ships: caches, logs, and the dev-only tests/ tree (harness + tools).
-EXCLUDE_NAMES = {"__pycache__", "logs", "tests"}
+EXCLUDE_NAMES = {"__pycache__", "logs", "tests", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
 
 # Players get exactly these two bats. They differ from the repo-root bats only
 # in the python path (a sibling python/ instead of dist/python).
