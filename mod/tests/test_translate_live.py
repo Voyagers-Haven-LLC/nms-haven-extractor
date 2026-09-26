@@ -97,8 +97,9 @@ def main():
 
     def rig(game, disk_cache=None):
         class R(lm.LanguageMixin):
-            def _lang_translate_fn(self):
-                return game.translate
+            def _lang_bound_translate(self, mgr):
+                # what pyMHF does for a bound call: `this` = the mapped instance
+                return lambda text, default: game.translate(ctypes.cast(mgr, LP_BASE), text, default)
 
             def _lang_getinstance_fn(self):
                 return game.get_instance
@@ -233,7 +234,56 @@ def main():
         trap_this = True
     ok &= check("negative control: passing `this` as a raw int IS rejected", trap_this)
 
-    # 13. layer order in source: live, then the cache, then passthrough
+    # 13. the REAL pyMHF call path. Everything above swaps the game function for a
+    #     fake; this runs pyMHF's own binding + FunctionHook.__call__ + _call, which
+    #     builds the real ctypes prototype and calls it. Only the final native address
+    #     is redirected: to a C-callable Python function with the game's exact
+    #     signature. This is what caught nothing in 2.1.1: the class-level call never
+    #     reached the game at all.
+    import pymhf.core.hooking as hooking
+    import pymhf.core._internal as internal
+    hook = nms.cTkLanguageManagerBase.Translate
+    funcdef = _get_funcdef(hook._func)
+    seen = {}
+    word = ctypes.create_string_buffer(b"Bountiful")
+
+    def native(this, text, default):
+        seen["this"] = ctypes.cast(this, ctypes.c_void_p).value
+        # c_char_p64 arrives as its own ctypes type or a plain int address
+        addr = text if isinstance(text, int) else getattr(text, "value", None)
+        if not isinstance(addr, int):
+            addr = ctypes.cast(text, ctypes.c_void_p).value
+        seen["text_type"] = type(text).__name__
+        seen["text"] = ctypes.string_at(addr) if addr else None
+        return ctypes.addressof(word)
+
+    native_c = ctypes.CFUNCTYPE(funcdef.restype, *funcdef.arg_types)(native)
+    saved = (hooking.find_pattern_in_binary, internal.BASE_ADDRESS, hook._bound_class)
+    hooking.find_pattern_in_binary = lambda *a, **k: 0
+    internal.BASE_ADDRESS = ctypes.cast(native_c, ctypes.c_void_p).value
+    try:
+        # negative control: the 2.1.1 call style (on the class, nothing bound)
+        hook._bound_class = None
+        try:
+            hook(ctypes.cast(MANAGER_ADDR, LP_BASE), b"RARITY_HIGH3", None)
+            class_call_raised = False
+        except ValueError as e:
+            class_call_raised = "Not bound" in str(e)
+        ok &= check("negative control: calling Translate on the class raises 'Not bound' (the 2.1.1 bug)",
+                    class_call_raised)
+
+        r5 = rig(FakeGame({}))
+        del type(r5)._lang_bound_translate          # use the REAL mixin method
+        r5._lang_manager_seen = MANAGER_ADDR
+        out = r5._translate_live("RARITY_HIGH3")
+        ok &= check("real pyMHF bound call reaches the native function and resolves",
+                    out == "Bountiful" and seen.get("text") == b"RARITY_HIGH3")
+        ok &= check("pyMHF passed the game's own manager as `this`", seen.get("this") == MANAGER_ADDR)
+        ok &= check("no failure was counted", r5._lang_live_failures == 0 and not r5._lang_live_disabled)
+    finally:
+        hooking.find_pattern_in_binary, internal.BASE_ADDRESS, hook._bound_class = saved
+
+    # 14. layer order in source: live, then the cache, then passthrough
     src = (MOD / "language" / "language_mixin.py").read_text(encoding="utf-8")
     body = src[src.index("def _resolve_adjective"):]
     ok &= check("resolver order is live Translate, then the cache, then passthrough",

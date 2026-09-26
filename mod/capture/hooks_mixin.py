@@ -399,7 +399,6 @@ class CaptureHooksMixin:
             planet_description = ""       # v1.4.0: Biome adjective text ID
             planet_type_display = ""      # v1.4.0: Planet type display string
             is_weather_extreme = False    # v1.4.0: Extreme weather flag
-            resources_raw = ""            # 2.1.1: PlanetInfo.Resources, the game's own list
             try:
                 if hasattr(planet_data, 'PlanetInfo'):
                     info = planet_data.PlanetInfo
@@ -454,16 +453,6 @@ class CaptureHooksMixin:
                             logger.info(f"    [DISPLAY] Weather: '{weather_display}'")
                         else:
                             weather_display = ""
-
-                    # 2.1.1: the resource line the discovery page shows. Usually still empty on
-                    # this hook (PlanetInfo fills at APPVIEW); the export refresh re-reads it.
-                    if hasattr(info, 'Resources'):
-                        val = str(info.Resources) or ""
-                        resources_raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
-                        if resources_raw and resources_raw != "None":
-                            logger.info(f"    [DISPLAY] Resources: '{resources_raw}'")
-                        else:
-                            resources_raw = ""
 
                     # v1.4.0: PlanetDescription - biome adjective text ID (e.g., "Paradise Planet")
                     if hasattr(info, 'PlanetDescription'):
@@ -568,7 +557,6 @@ class CaptureHooksMixin:
                 'planet_description': planet_description,      # v1.4.0: Biome adjective text ID
                 'planet_type_display': planet_type_display,    # v1.4.0: Planet type display string
                 'is_weather_extreme': is_weather_extreme,      # v1.4.0: Extreme weather flag
-                'resources_raw': resources_raw,                # 2.1.1: the game's own resource line
                 'extra_resource_hints': extra_resource_hints,  # v1.4.5: Special resource hint IDs
                 'has_scrap': has_scrap,                        # v1.4.5: HasScrap boolean
                 'has_rings': has_rings,                        # 2.1.1: cGcPlanetData.Rings.HasRings
@@ -577,21 +565,12 @@ class CaptureHooksMixin:
                 'sentinel_raw': sentinel_raw,
             }
 
-            # v1.4.5: Set special resource flags from ExtraResourceHints + HasScrap
-            for hint_id in extra_resource_hints:
-                hint_upper = hint_id.upper()
-                translated = translate_resource(hint_upper)
-                translated_lower = translated.lower() if translated else ""
-                if "ancient bones" in translated_lower or hint_upper in ("FOSSIL1", "FOSSIL2", "CREATURE1", "BONES", "ANCIENT", "UI_BONES_HINT"):
-                    self._captured_planets[planet_key]['ancient_bones'] = 1
-                if "salvageable scrap" in translated_lower or hint_upper in ("SALVAGE", "SALVAGE1", "TECHFRAG", "UI_SCRAP_HINT"):
-                    self._captured_planets[planet_key]['salvageable_scrap'] = 1
-                if "storm crystal" in translated_lower or hint_upper in ("STORM1", "STORM_CRYSTAL", "UI_STORM_HINT"):
-                    self._captured_planets[planet_key]['storm_crystals'] = 1
-                if "gravitino" in translated_lower or hint_upper in ("GRAVITINO", "GRAV_BALL", "UI_GRAV_HINT"):
-                    self._captured_planets[planet_key]['gravitino_balls'] = 1
-                if "vile brood" in translated_lower or "whispering egg" in translated_lower or hint_upper in ("INFESTATION", "VILEBROOD", "LARVA", "LARVAL", "UI_BUGS_HINT"):
-                    self._captured_planets[planet_key]['vile_brood'] = 1
+            # v1.4.5: Set special resource flags from ExtraResourceHints + HasScrap.
+            # 2.1.1: usually still EMPTY here - the game fills the hints after this
+            # hook (live probe 2026-09-25: Urston IV's UI_BONES_HINT and Xidiusa's
+            # UI_BUGS_HINT were in memory at APPVIEW, missed here). The export
+            # refresh re-reads them; this pass only keeps what is already there.
+            self._apply_hint_tags(self._captured_planets[planet_key], extra_resource_hints)
             # 2.1.1: the raw hint ids, at INFO for every planet that has any, so real
             # captures record what the game actually uses (no hint id had ever been
             # logged; the resource table only translates ids it has been taught).
@@ -673,6 +652,73 @@ class CaptureHooksMixin:
             logger.debug(f"[BATCH] Already saved, {len(self._batch_systems)} in batch")
 
     # ---- source lines 2622-2718: _auto_refresh_for_export ----
+    # The discovery page's tag hints. Ids confirmed live 2026-09-15 and 09-25:
+    # UI_BONES_HINT, UI_SCRAP_HINT, UI_BUGS_HINT. A PLANT_* hint is the planet's
+    # plant (PLANT_LUSH on Urston IV, PLANT_RADIO on Liythio Gamma; the Swamp
+    # world Xidiusa lists none) and is the ONLY source of plant_resource: no hint,
+    # no plant - nothing is guessed from the biome. Anything else is matched by
+    # the game's own words.
+    _HINT_TAGS = (
+        ('ancient_bones', ("ancient bones",), ("UI_BONES_HINT", "FOSSIL1", "FOSSIL2", "BONES", "ANCIENT")),
+        ('salvageable_scrap', ("salvageable scrap",), ("UI_SCRAP_HINT", "SALVAGE", "SALVAGE1", "TECHFRAG")),
+        ('storm_crystals', ("storm crystal",), ("UI_STORM_HINT", "STORM1", "STORM_CRYSTAL")),
+        ('gravitino_balls', ("gravitino",), ("UI_GRAV_HINT", "GRAVITINO", "GRAV_BALL")),
+        ('vile_brood', ("vile brood", "whispering egg"),
+         ("UI_BUGS_HINT", "INFESTATION", "VILEBROOD", "LARVA", "LARVAL")),
+    )
+
+    def _apply_hint_tags(self, captured: dict, hint_ids, log_name: str = None, complete: bool = False):
+        """Set the tag flags and the plant a planet's ExtraResourceHints carry. Only
+        ever sets, never clears: an empty read (too early) must not undo a real one.
+        ``complete`` marks the export refresh's read, the one the game has filled: a
+        complete list with no PLANT_* entry is the game saying this planet has no
+        plant, recorded as plant_source 'none' (the website then knows the line was
+        read, not guessed). The capture hook's early read never claims that."""
+        unknown = []
+        for hint_id in hint_ids or ():
+            up = hint_id.upper()
+            if up.startswith("PLANT_"):
+                name = translate_resource(up)
+                if name and name != up:
+                    captured['plant_resource'] = name
+                    captured['plant_source'] = 'game'
+                else:
+                    unknown.append(hint_id)       # a plant id the table has not met
+                continue
+            words = (translate_resource(up) or "")
+            if words == up:
+                try:
+                    words = self._translate_live(up) or ""
+                except Exception:
+                    words = ""
+            low = words.lower()
+            matched = False
+            for flag, texts, ids in self._HINT_TAGS:
+                if up in ids or any(t in low for t in texts):
+                    captured[flag] = 1
+                    matched = True
+            if not matched:
+                unknown.append(f"{hint_id}={words!r}" if words and words != up else hint_id)
+        if complete and not captured.get('plant_resource'):
+            captured['plant_source'] = 'none'
+        if log_name and hint_ids:
+            tags = [f for f, _, _ in self._HINT_TAGS if captured.get(f)]
+            plant = captured.get('plant_resource')
+            logger.info(f"    [HINTS] '{log_name}' hints {list(hint_ids)} -> tags {tags}"
+                        + (f" | plant {plant}" if plant else " | no plant (game lists none)")
+                        + (f" | unknown {unknown}" if unknown else ""))
+
+    # The sentinel word's id family is the game's activity level. Human-entered
+    # haven-ui data tags exactly the DEFAULT words (Attentive, Require Orthodoxy,
+    # Frequent...) "High Sentinel Activity" and the AGGRESSIVE/HIGH words
+    # (Frenzied, Hostile Patrols, High Security...) "Aggressive Sentinel Activity".
+    def _apply_sentinel_tags(self, captured: dict, raw_id: str):
+        if not raw_id or not raw_id.startswith("SENTINEL_"):
+            return
+        fam = raw_id[len("SENTINEL_"):].rstrip("0123456789")
+        captured['high_sentinel_activity'] = 1 if fam == "DEFAULT" else 0
+        captured['aggressive_sentinel_activity'] = 1 if fam in ("AGGRESSIVE", "HIGH") else 0
+
     def _auto_refresh_for_export(self):
         """
         v1.4.1: Silently refresh adjectives from PlanetInfo before export.
@@ -730,6 +776,27 @@ class CaptureHooksMixin:
                     info = planet_data.PlanetInfo
                     captured = self._captured_planets[memory_name]
 
+                    # 2.1.1: the discovery page's tags (Ancient Bones, Vile Brood,
+                    # Salvageable Scrap...). ExtraResourceHints is filled after the
+                    # capture hook, so this is where it can actually be read.
+                    try:
+                        hints = planet_data.ExtraResourceHints
+                        hint_ids = []
+                        for hi in range(len(hints)):
+                            hid = ''.join(c for c in str(hints[hi].Hint)
+                                          if c.isprintable() and ord(c) < 128).strip()
+                            if len(hid) >= 2:
+                                hint_ids.append(hid)
+                        self._apply_hint_tags(captured, hint_ids, log_name=memory_name, complete=True)
+                    except Exception as e:
+                        logger.debug(f"    [HINTS] refresh read failed for '{memory_name}': {e}")
+                    try:
+                        if bool(planet_data.HasScrap):
+                            captured['has_scrap'] = True
+                            captured['salvageable_scrap'] = 1
+                    except Exception as e:
+                        logger.debug(f"    [HINTS] HasScrap unreadable for '{memory_name}': {e}")
+
                     # Flora
                     if hasattr(info, 'Flora'):
                         val = str(info.Flora) or ""
@@ -750,6 +817,7 @@ class CaptureHooksMixin:
                         if hasattr(sent_arr, '__getitem__'):
                             val = str(sent_arr[self._get_difficulty_index()]) or ""
                             raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                            self._apply_sentinel_tags(captured, raw)
                             if raw == "None":
                                 captured['sentinel_display'] = "None"   # a sentinel-free planet
                             elif raw and len(raw) >= 2:
@@ -762,16 +830,6 @@ class CaptureHooksMixin:
                         if raw and raw != "None" and len(raw) >= 2:
                             captured['weather_raw_string'] = raw
                             captured['weather_display'] = self._resolve_adjective(raw, 'weather')
-
-                    # 2.1.1: the resource line (see the capture hook); this is where it is
-                    # actually filled. Logged at INFO on the first read so the format is known.
-                    if hasattr(info, 'Resources'):
-                        val = str(info.Resources) or ""
-                        raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
-                        if raw and raw != "None":
-                            if not captured.get('resources_raw'):
-                                logger.info(f"    [EXPORT] Resources for '{memory_name}': '{raw}'")
-                            captured['resources_raw'] = raw
 
                     # 2.1.0: planet-type label. PlanetInfo is filled AFTER the capture hook,
                     # so this refresh is where the descriptor actually becomes readable.

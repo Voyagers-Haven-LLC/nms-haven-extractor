@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.abspath(_MOD_DIR))
 
 from extraction_core import (  # noqa: E402
     decide_galaxy, build_planet_entry, build_planet_list,
-    build_system_payload, galaxy_is_known, select_captures, parse_game_resources,
+    build_system_payload, galaxy_is_known, select_captures,
 )
 
 _failures = []
@@ -110,20 +110,23 @@ def test_planet_mapping():
     p = _planet_builder(_captured_planet("Aurora", biome="Lush", flora="Bountiful", flora_raw=3), 0)
     check("flora_level mapped from captured 'flora'", p["flora_level"] == "Bountiful")
     check("planet_name preserved", p["planet_name"] == "Aurora")
-    check("2.1.1: no plant_resource is invented from the biome any more", "plant_resource" not in p)
+    check("no plant hint -> no plant, even Lush with flora", "plant_resource" not in p)
+    capg = _captured_planet("Urston IV", biome="Lush", flora="Bountiful", flora_raw=3)
+    capg["plant_resource"] = "Star Bulb"          # what the PLANT_LUSH hint resolved to
+    pg = _planet_builder(capg, 0)
+    check("the game's plant ships", pg.get("plant_resource") == "Star Bulb")
+    check("...marked as the game's", pg.get("plant_source") == "game")
 
-    # The game's own resource line drives `resources` and the special flags.
-    cap = _captured_planet("Tond", biome="Lava", flora="Sparse", flora_raw=1)
-    cap["resources_raw"] = "Copper, Basalt, Salt"
+    # The Averno-Coyth bug: the abundance word must never ship as resources.
+    cap = _captured_planet("Averno", biome="Lush", flora="Sparse", flora_raw=1)
+    cap["resources_raw"] = "RARITY_LOW2"
     p2 = _planet_builder(cap, 1)
-    check("resources == the game line, in order, no Solanium", p2.get("resources") == ["Copper", "Basalt", "Salt"])
-    cap3 = _captured_planet("Boneyard", biome="Barren")
-    cap3["resources_raw"] = "Ancient Bones, Copper, Salvageable Scrap, Sodium, Copper"
-    p3 = _planet_builder(cap3, 2)
-    check("special collectibles leave the list and become flags",
-          p3.get("resources") == ["Copper", "Sodium"] and p3.get("ancient_bones") == 1 and p3.get("salvageable_scrap") == 1)
-    p4b = _planet_builder(_captured_planet("Unread", biome="Lush"), 3)
-    check("no game line read -> no resources key (backend falls back)", "resources" not in p4b)
+    check("abundance word is never shipped", "resources" not in p2 and "RARITY" not in str(p2), f"got {p2}")
+    # The Lava/Solanium bug stays fixed.
+    p3 = _planet_builder(_captured_planet("Tond", biome="Lava", flora="Sparse", flora_raw=1), 2)
+    check("Lava gets no guessed plant", "plant_resource" not in p3 and "plant_source" not in p3)
+    p4b = _planet_builder(_captured_planet("Bare", biome="Frozen", flora_raw=0), 3)
+    check("Frozen with no hint -> no plant", "plant_resource" not in p4b)
     cap5 = _captured_planet("Scrappy", biome="Dead"); cap5["has_scrap"] = True
     check("typed HasScrap -> salvageable_scrap", _planet_builder(cap5, 4).get("salvageable_scrap") == 1)
 
@@ -351,20 +354,6 @@ def test_display_adjective_preference():
     check("clean_weather applied to chosen weather", p3["weather"] == "RAW_WEATHER 6", f"got {p3['weather']}")
 
 
-def test_parse_game_resources():
-    print("parse_game_resources (the game's own discovery-page list):")
-    tr = {"YELLOW2": "Copper", "ROCKSALT": "Salt", "UI_BONES_HINT": "Ancient Bones"}.get
-    names, flags = parse_game_resources("YELLOW2, ROCKSALT, Basalt, UI_BONES_HINT", lambda t: tr(t) or t)
-    check("ids translated through the substance table", names == ["Copper", "Salt", "Basalt"], f"got {names}")
-    check("a translated collectible becomes a flag", flags == {"ancient_bones": 1}, f"got {flags}")
-    names, flags = parse_game_resources("Copper; Storm Crystals<br>Gravitino Ball | Whispering Eggs\nVile Brood", lambda t: t)
-    check("separators + markup handled; every collectible flagged",
-          names == ["Copper"] and flags == {"storm_crystals": 1, "gravitino_balls": 1, "vile_brood": 1}, f"got {names} {flags}")
-    check("empty / None / 'None' -> nothing", parse_game_resources("", lambda t: t) == ([], {})
-          and parse_game_resources(None, lambda t: t) == ([], {}) and parse_game_resources("None", lambda t: t) == ([], {}))
-    check("duplicates dropped, first spelling kept", parse_game_resources("Copper, copper, COPPER", lambda t: t)[0] == ["Copper"])
-
-
 def test_galaxy_is_known():
     print("galaxy_is_known (export hard-stop guard):")
     check("known galaxy", galaxy_is_known({"galaxy_name": "Odyalutai"}) is True)
@@ -406,7 +395,6 @@ def main():
     test_phantom_filter()
     test_display_adjective_preference()
     test_galaxy_is_known()
-    test_parse_game_resources()
     test_planet_flags_2_1_1()
     print("=" * 64)
     if _failures:

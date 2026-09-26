@@ -115,9 +115,12 @@ RESOURCE_NAMES = {
     "UI_GRAV_HINT": "Gravitino Balls",
 }
 
-# 2.1.1: the biome->plant tables are gone. Resources come from the game's own
-# PlanetInfo.Resources line (payload/extraction_core.parse_game_resources); the
-# table's Lava/Swamp/Waterworld rows were guesses the human data contradicted.
+# There is no plant-by-biome table any more. The plant is the PLANT_* entry in
+# cGcPlanetData.ExtraResourceHints (translated through RESOURCE_NAMES above), read
+# by the export refresh; a planet the game lists no plant for ships none. The old
+# biome guess is where the wrong Lava/Solanium rows came from, and PlanetInfo.Resources
+# (tried briefly in 2.1.1) is ONE abundance word id - RARITY_LOW2 = "Scarce" - not
+# the resources.
 
 # v1.4.5: Internal substance IDs that don't appear on the discovery screen
 # Dead/Airless moons have SPACEGUNK internally but show Rusted Metal to the player

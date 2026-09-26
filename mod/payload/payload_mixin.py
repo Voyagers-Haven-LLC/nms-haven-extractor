@@ -186,19 +186,19 @@ class PayloadMixin:
             # Align columns
             label = f"{p_name}{moon}"
             logger.info(f"  [{i+1}/{total}] {label:<24s} {biome:<20s} Flora: {flora:<12s} Fauna: {fauna:<12s} Sentinel: {sentinel}")
-            # 2.1.1: the second line is what the player checks against the game's
-            # discovery page — the resource list as the game shows it, then the
-            # attributes we read. "not read" marks a typed field that was not read.
-            if p.get('resources') is not None:
-                res = ", ".join(p['resources']) or "(empty)"
-            else:
-                res = ", ".join(v for v in (p.get('common_resource'), p.get('uncommon_resource'), p.get('rare_resource'))
-                                if v and v != 'Unknown') + "  (game line not read)"
+            # The second line is what the player checks against the game's
+            # discovery page: plant + the three substances, then the attributes
+            # we read. "not read" marks a typed field that was not read.
+            res = ", ".join(v for v in (p.get('plant_resource'), p.get('common_resource'),
+                                        p.get('uncommon_resource'), p.get('rare_resource'))
+                            if v and v != 'Unknown') or "(none)"
             attrs = []
             for key, word in (('has_rings', 'Rings'), ('water_world', 'Water world'), ('is_dissonant', 'Dissonant'),
                               ('infested', 'Infested'), ('ancient_bones', 'Ancient Bones'),
                               ('salvageable_scrap', 'Salvageable Scrap'), ('vile_brood', 'Vile Brood'),
-                              ('storm_crystals', 'Storm Crystals'), ('gravitino_balls', 'Gravitino Balls')):
+                              ('storm_crystals', 'Storm Crystals'), ('gravitino_balls', 'Gravitino Balls'),
+                              ('high_sentinel_activity', 'High Sentinels'),
+                              ('aggressive_sentinel_activity', 'Aggressive Sentinels')):
                 if p.get(key):
                     attrs.append(word)
             if p.get('exotic_trophy'):

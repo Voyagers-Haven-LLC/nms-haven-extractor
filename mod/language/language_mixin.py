@@ -110,8 +110,17 @@ class LanguageMixin:
     #     it did before 2.1.1.
     #   * nothing here raises into the game.
 
-    def _lang_translate_fn(self):
-        return nms.cTkLanguageManagerBase.Translate
+    def _lang_bound_translate(self, mgr: int):
+        """The game's Translate, bound to the language manager at ``mgr``.
+
+        Translate is NOT static. Called on the class, pyMHF raises "Not bound to
+        anything..." on every call (FunctionHook.__call__), so the 2.1.1 build fell
+        back to the English cache every time without anyone seeing why. Reaching it
+        through a mapped instance binds it (pyMHF's Structure.__getattribute__), and
+        pyMHF then passes ``this`` itself.
+        """
+        from pymhf.core.memutils import map_struct
+        return map_struct(mgr, nms.cTkLanguageManagerBase).Translate
 
     def _lang_getinstance_fn(self):
         return nms.cTkLanguageManager.GetInstance
@@ -161,12 +170,11 @@ class LanguageMixin:
             return None   # the game has not called Translate yet: early, not a failure
         self._lang_in_live_call = True
         try:
-            lp_base, _cp64, lp_tkid = self._lang_arg_types()
-            this_ptr = ctypes.cast(mgr, lp_base)
+            _lp_base, _cp64, lp_tkid = self._lang_arg_types()
             text_buf = ctypes.create_string_buffer(raw)
             default = basic.TkID[_TKID_DEFAULT_SIZE](raw)
             default_ptr = ctypes.cast(ctypes.pointer(default), lp_tkid)
-            result = self._lang_translate_fn()(this_ptr, ctypes.addressof(text_buf), default_ptr)
+            result = self._lang_bound_translate(mgr)(ctypes.addressof(text_buf), default_ptr)
             if result is None:
                 # a real call returns an int (even 0); None means pyMHF caught a failure
                 raise RuntimeError("Translate call failed inside pyMHF")
@@ -175,7 +183,10 @@ class LanguageMixin:
             text = value.decode("utf-8", errors="ignore").strip() if value else ""
         except Exception as e:
             self._lang_live_failures = getattr(self, "_lang_live_failures", 0) + 1
-            logger.debug(f"[TRANSLATE-LIVE] call failed for {text_id!r}: {e}")
+            # The FIRST failure is logged at WARNING: player logs filter this module's
+            # DEBUG, which is why the 2.1.1 build's failure reason was never seen.
+            log = logger.warning if self._lang_live_failures == 1 else logger.debug
+            log(f"[TRANSLATE-LIVE] call failed for {text_id!r}: {e.__class__.__name__}: {e}")
             if self._lang_live_failures >= _LIVE_FAIL_LIMIT:
                 self._lang_live_disabled = True
                 logger.warning(f"[TRANSLATE-LIVE] disabled for this session after "

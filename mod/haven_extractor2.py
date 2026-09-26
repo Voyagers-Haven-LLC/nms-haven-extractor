@@ -51,7 +51,7 @@ from api_local.server import LocalApi
 
 logger = logging.getLogger("haven_extractor2")
 
-__version__ = "2.1.1-dev"
+__version__ = "2.1.1"
 
 # Required memory hooks — the readiness gate checks these against pyMHF's
 # registry after load (June 16 2026: 'Unable to find offset for
