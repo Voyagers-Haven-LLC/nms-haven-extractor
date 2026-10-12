@@ -19,7 +19,7 @@ def main():
 
     from readiness import registry_names, unbound_required_hooks  # noqa: E402
 
-    REQUIRED = ("cTkLanguageManagerBase.Translate", "cGcSolarSystem.Generate",
+    REQUIRED = ("cTkLanguageManagerBase.Translate_internal", "cGcSolarSystem.Generate",
                 "cGcPlanetGenerator.GenerateCreatureRoles")
 
 
@@ -61,14 +61,14 @@ def main():
     ok &= check("all three required hooks registered -> nothing unbound",
                 unbound_required_hooks(names, REQUIRED) == [])
 
-    hm = fake_manager(("cTkLanguageManagerBase.Translate", "cGcPlanetGenerator.GenerateCreatureRoles"))
+    hm = fake_manager(("cTkLanguageManagerBase.Translate_internal", "cGcPlanetGenerator.GenerateCreatureRoles"))
     names = registry_names(hm)
     ok &= check("Generate's pattern unresolved -> reported unbound",
                 unbound_required_hooks(names, REQUIRED) == ["cGcSolarSystem.Generate"])
     ok &= check("negative control: the OLD failed_hooks gate saw nothing wrong (bug reproduced)",
                 old_gate_failed(hm) == [])
 
-    hm = fake_manager(("cGcSolarSystem.Generate(overloadA)", "cTkLanguageManagerBase.Translate",
+    hm = fake_manager(("cGcSolarSystem.Generate(overloadA)", "cTkLanguageManagerBase.Translate_internal",
                        "cGcPlanetGenerator.GenerateCreatureRoles"))
     ok &= check("overload suffix '(...)' is stripped when matching",
                 unbound_required_hooks(registry_names(hm), REQUIRED) == [])

@@ -54,27 +54,20 @@ class LanguageMixin:
                 seen = self._addr_of(this)
                 if seen > 0x10000:
                     self._lang_manager_seen = seen
-            if not lpacText or not _result_:
-                return
-
-            # Decode the text ID
-            if isinstance(lpacText, bytes):
-                text_id = lpacText.decode('utf-8', errors='ignore')
-            else:
-                text_id = str(ctypes.cast(lpacText, ctypes.c_char_p).value or b'', 'utf-8', errors='ignore')
-
-            if not text_id:
+            # 2.1.2: pyMHF hands both strings over as c_char_p64 (a c_uint64 subclass,
+            # NOT a pointer, so ctypes.cast() rejects it): read the address first.
+            text_id = self._cstr(lpacText)
+            if not text_id or not self._addr_of(_result_):
                 return
 
             # Only capture adjective-related text IDs (+ planet-type descriptors)
             if text_id.startswith(ADJECTIVE_PREFIXES) or DESCRIPTOR_ID_RE.match(text_id):
                 # Read the result string from the return value
                 try:
-                    result_ptr = ctypes.cast(_result_, ctypes.c_char_p)
-                    if result_ptr.value:
-                        display_text = result_ptr.value.decode('utf-8', errors='ignore')
+                    display_text = self._cstr(_result_)
+                    if display_text:
                         # Only store if it looks like valid display text (not another ID)
-                        if (display_text and len(display_text) >= 2 and
+                        if (len(display_text) >= 2 and
                             not display_text.startswith(('RARITY_', 'SENTINEL_', 'WEATHER_', 'UI_'))):
                             if text_id not in self._translation_cache:
                                 self._translation_cache[text_id] = display_text
@@ -91,10 +84,14 @@ class LanguageMixin:
     # own cTkLanguageManagerBase::Translate returns the text in whatever language the
     # player runs, and covers ids the game has not rendered yet.
     #
-    # Call contract (pyMHF 0.2.4 / NMSpy 178994, proved headless in
+    # Call contract (pyMHF 0.2.4 / NMSpy 181442, proved headless in
     # tests/test_translate_live.py against the real generated types):
-    #   Translate(this: LP_cTkLanguageManagerBase, lpacText: c_char_p64,
-    #             lpacDefaultReturnValue: LP_TkID<0x20>) -> c_uint64 (address of UTF-8 text)
+    #   Translate_internal(this: LP_cTkLanguageManagerBase, lpacText: c_char_p64,
+    #             lpacDefaultReturnValue: LP_TkID<0x20>) -> c_char_p64 (address of UTF-8 text)
+    # NMSpy 180383 renamed the hook from Translate (2.1.1 fails to import on it) and
+    # added a static cTkLanguageManager.Translate(str) helper. That helper passes a
+    # NULL default, which is exactly what the safety notes below avoid, so the mod
+    # keeps its own call and only follows the rename.
     # Two traps, both silent without the cache fallback: `this` must be cast to pyMHF's
     # pointer class (a raw int is rejected), and the default must be cast to pyMHF's
     # LP_TkID<0x20> (ctypes.pointer() builds a different class with the same name).
@@ -120,7 +117,7 @@ class LanguageMixin:
         pyMHF then passes ``this`` itself.
         """
         from pymhf.core.memutils import map_struct
-        return map_struct(mgr, nms.cTkLanguageManagerBase).Translate
+        return map_struct(mgr, nms.cTkLanguageManagerBase).Translate_internal
 
     def _lang_getinstance_fn(self):
         return nms.cTkLanguageManager.GetInstance
@@ -129,7 +126,7 @@ class LanguageMixin:
         """The exact pointer classes pyMHF builds the Translate call with (lru-cached funcdef)."""
         if getattr(self, "_lang_types", None) is None:
             from pymhf.core.functions import _get_funcdef
-            self._lang_types = tuple(_get_funcdef(nms.cTkLanguageManagerBase.Translate._func).arg_types)
+            self._lang_types = tuple(_get_funcdef(nms.cTkLanguageManagerBase.Translate_internal._func).arg_types)
         return self._lang_types
 
     @staticmethod
@@ -146,6 +143,22 @@ class LanguageMixin:
             return ctypes.cast(val, ctypes.c_void_p).value or 0
         except Exception:
             return 0
+
+    @classmethod
+    def _cstr(cls, val) -> str:
+        """UTF-8 text behind a C string handed over as bytes, an int address, a ctypes
+        pointer, or pyMHF's c_char_p64. '' when absent or unreadable. Never raises.
+        Addresses inside the first 64 KB are treated as absent (never read the null page)."""
+        try:
+            if isinstance(val, bytes):
+                return val.decode("utf-8", errors="ignore")
+            addr = cls._addr_of(val)
+            if addr <= 0x10000:
+                return ""
+            value = ctypes.cast(addr, ctypes.c_char_p).value
+            return value.decode("utf-8", errors="ignore") if value else ""
+        except Exception:
+            return ""
 
     def _lang_count(self, which: str):
         attr = f"_lang_n_{which}"
@@ -176,7 +189,7 @@ class LanguageMixin:
             default_ptr = ctypes.cast(ctypes.pointer(default), lp_tkid)
             result = self._lang_bound_translate(mgr)(ctypes.addressof(text_buf), default_ptr)
             if result is None:
-                # a real call returns an int (even 0); None means pyMHF caught a failure
+                # a real call returns a c_char_p64 (even for NULL); None means pyMHF caught a failure
                 raise RuntimeError("Translate call failed inside pyMHF")
             addr = self._addr_of(result)
             value = ctypes.cast(addr, ctypes.c_char_p).value if addr else None

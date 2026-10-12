@@ -1,8 +1,9 @@
 """Framework pin — the ONE place that says which NMSpy build this extractor was
 verified against.
 
-NMSpy's package version IS the No Man's Sky build id (178994.0 == the Cosmos
-7.01 Steam build). The generated structs inside it (nmspy.data.exported_types)
+NMSpy's package version IS the No Man's Sky build id (181442.0 == the Steam
+build of 2026-10-05; 178994.0 was Cosmos 7.01). The generated structs inside it
+(nmspy.data.exported_types)
 are only correct for that build, and since 2.1.0 every struct read in this mod
 goes through those generated classes — there are no hand-maintained offsets
 left to "fix" after a game update. So correctness == "installed nmspy matches
@@ -21,7 +22,7 @@ Bumping after a game patch: wait for monkeyman192's matching nmspy release
 against a real capture, release.
 """
 
-NMSPY_PIN = "178994.0"
+NMSPY_PIN = "181442.0"
 PYMHF_PIN = "0.2.4"
 
 PINS = {"nmspy": NMSPY_PIN, "pymhf": PYMHF_PIN}

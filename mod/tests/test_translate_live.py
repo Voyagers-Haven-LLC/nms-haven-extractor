@@ -2,7 +2,7 @@
 
 The live path cannot run without the game, so this exercises everything around the
 one call. It imports the REAL mixin under the pinned framework, takes pyMHF's REAL
-argument types for cTkLanguageManagerBase::Translate, and swaps only the two game
+argument types for cTkLanguageManagerBase::Translate_internal, and swaps only the two game
 callables for fakes. Every argument the fake receives goes through the real
 argtype's from_param, which is the same conversion ctypes performs on the real
 call, so a wrong pointer class fails here instead of silently falling back in game.
@@ -46,7 +46,7 @@ def main():
 
     logging.basicConfig(level=logging.CRITICAL)   # keep the run quiet
 
-    LP_BASE, CP64, LP_TKID = _get_funcdef(nms.cTkLanguageManagerBase.Translate._func).arg_types
+    LP_BASE, CP64, LP_TKID = _get_funcdef(nms.cTkLanguageManagerBase.Translate_internal._func).arg_types
 
     def check(label, cond):
         print(("PASS " if cond else "FAIL ") + label)
@@ -139,6 +139,23 @@ def main():
     result_buf = ctypes.create_string_buffer(b"Bountiful")
     r._on_translate_impl(this_from_game, b"RARITY_HIGH3", None, ctypes.addressof(result_buf))
     ok &= check("passive hook captures the manager address the game passes", r._lang_manager_seen == MANAGER_ADDR)
+
+    # 2b. the shapes pyMHF really hands the passive hook: c_char_p64 for BOTH strings
+    #     (a c_uint64 subclass that ctypes.cast() rejects - the 2.1.1 capture silently
+    #     did nothing). The pair must land in the translation cache.
+    from pymhf.extensions.ctypes import c_char_p64
+    id_buf = ctypes.create_string_buffer(b"RARITY_MID5")
+    word_buf = ctypes.create_string_buffer(b"Ordinary")
+    r._on_translate_impl(this_from_game, c_char_p64(ctypes.addressof(id_buf)), None,
+                         c_char_p64(ctypes.addressof(word_buf)))
+    ok &= check("passive hook decodes c_char_p64 text and result into the translation cache",
+                r._translation_cache.get("RARITY_MID5") == "Ordinary")
+    try:
+        ctypes.cast(c_char_p64(ctypes.addressof(id_buf)), ctypes.c_char_p)
+        cast_rejects = False
+    except ctypes.ArgumentError:
+        cast_rejects = True
+    ok &= check("negative control: ctypes.cast() on a c_char_p64 IS rejected (why _cstr exists)", cast_rejects)
 
     # 3. live beats the cache, and the arguments are exactly what ctypes accepts
     r._lang_live_results.clear()
@@ -242,7 +259,7 @@ def main():
     #     reached the game at all.
     import pymhf.core.hooking as hooking
     import pymhf.core._internal as internal
-    hook = nms.cTkLanguageManagerBase.Translate
+    hook = nms.cTkLanguageManagerBase.Translate_internal
     funcdef = _get_funcdef(hook._func)
     seen = {}
     word = ctypes.create_string_buffer(b"Bountiful")
@@ -290,6 +307,41 @@ def main():
                 body.index("self._translate_live(text_id)")
                 < body.index("if text_id in self._adjective_file_cache")
                 < body.index("DESCRIPTOR_ID_RE.match(text_id)):\n            return text_id"))
+
+    # 15. the RETURN path of the passive hook. NMSpy 181442 types Translate_internal's
+    #     return as c_char_p64 (a ctypes subclass). pyMHF's compound detour returns the
+    #     original's result object straight to ctypes, which cannot convert it, and the
+    #     game receives garbage (-1 or a stack leftover) for every string (frozen on
+    #     the logos, 2026-10-12). The
+    #     after-hook must therefore return the raw address so pyMHF returns an int.
+    from pymhf.core.importing import import_file
+    hx = import_file(str(MOD / "haven_extractor2.py"))
+    on_translate = hx.HavenExtractor2.__dict__["on_translate"]
+    r6 = rig(FakeGame({}))
+    r6._hook_last_fire = {}
+    game_result = c_char_p64(ctypes.addressof(word_buf))
+    hook_ret = on_translate(r6, this_from_game, c_char_p64(ctypes.addressof(id_buf)), None, game_result)
+    ok &= check("after-hook returns the raw address as an int (what pyMHF hands back to ctypes)",
+                isinstance(hook_ret, int) and hook_ret == ctypes.addressof(word_buf))
+    ok &= check("after-hook still captured the pair while doing so",
+                r6._translation_cache.get("RARITY_MID5") == "Ordinary")
+    ok &= check("after-hook returns 0 (not None) for a NULL result, so pyMHF never falls back to the object",
+                on_translate(r6, this_from_game, c_char_p64(ctypes.addressof(id_buf)), None, c_char_p64(0)) == 0)
+
+    def game_sees(py_return):
+        """What the game receives from a pyMHF detour whose callback returns py_return."""
+        cb = ctypes.CFUNCTYPE(funcdef.restype, ctypes.c_void_p)(lambda this: py_return)
+        raw = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_void_p)(ctypes.cast(cb, ctypes.c_void_p).value)
+        return raw(0)
+
+    import io, contextlib
+    with contextlib.redirect_stderr(io.StringIO()):   # ctypes prints the ignored conversion error
+        broken = game_sees(game_result)
+    ok &= check("negative control: returning the c_char_p64 object hands the game garbage, never the string (the freeze)",
+                broken != ctypes.addressof(word_buf))
+    ok &= check("returning the int hands the game the real string pointer",
+                game_sees(hook_ret) == ctypes.addressof(word_buf)
+                and ctypes.string_at(game_sees(hook_ret)) == b"Ordinary")
 
     print()
     print("ALL PASS" if ok else "FAILURES PRESENT")

@@ -51,13 +51,13 @@ from api_local.server import LocalApi
 
 logger = logging.getLogger("haven_extractor2")
 
-__version__ = "2.1.1"
+__version__ = "2.1.2"
 
 # Required memory hooks — the readiness gate checks these against pyMHF's
 # registry after load (June 16 2026: 'Unable to find offset for
 # cGcSolarSystem.Generate' and the mod still said "ready" — never again).
 REQUIRED_HOOKS = (
-    "cTkLanguageManagerBase.Translate",
+    "cTkLanguageManagerBase.Translate_internal",   # NMSpy 180383+ renamed Translate
     "cGcSolarSystem.Generate",
     "cGcPlanetGenerator.GenerateCreatureRoles",
 )
@@ -462,10 +462,19 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
 
     # ------------------------------------------------------- decorated hooks
 
-    @nms.cTkLanguageManagerBase.Translate.after
+    @nms.cTkLanguageManagerBase.Translate_internal.after
     def on_translate(self, this, lpacText, lpacDefaultReturnValue, _result_):
         self._hook_last_fire["translate"] = time.time()
-        return self._on_translate_impl(this, lpacText, lpacDefaultReturnValue, _result_)
+        self._on_translate_impl(this, lpacText, lpacDefaultReturnValue, _result_)
+        # 2.1.2: NMSpy 181442 types this function's return as c_char_p64, a ctypes
+        # SUBCLASS. pyMHF's compound detour hands the original's result object straight
+        # back to ctypes, which cannot convert it ('c_char_p64' object cannot be
+        # interpreted as an integer) and the game receives garbage (-1, a stack leftover)
+        # for EVERY translated string: frozen on the logos, FSM already at MODESELECTOR
+        # (2026-10-12). pyMHF returns an after-hook's non-None value instead, so hand
+        # back the raw address as an int, which ctypes converts correctly. Must never
+        # raise: a raising detour is disabled by pyMHF and the object path returns.
+        return self._addr_of(_result_)
 
     @nms.cGcSolarSystem.Generate.after
     def on_system_generate(self, this, lbUseSettingsFile, lSeed):
