@@ -39,8 +39,10 @@ def main():
         captured, 0, translate_resource=lambda v: v,
         hidden_substance_names=set(), hidden_substance_ids=set(),
     )
-    ok &= check("weather ships the display adjective ('Refreshing Breeze')",
-                entry["weather"] == "Refreshing Breeze")
+    # 2.2.0: weather = the game's weather class (Haven's parent), weather_text = the display text
+    ok &= check("weather ships the class ('Clear')", entry["weather"] == "Clear")
+    ok &= check("weather_text ships the display adjective ('Refreshing Breeze')",
+                entry.get("weather_text") == "Refreshing Breeze")
     ok &= check("extreme_weather=True shipped", entry.get("extreme_weather") is True)
     ok &= check("storm_frequency shipped", entry.get("storm_frequency") == "Occasional")
     ok &= check("description shipped", entry.get("description") == "Overgrown Paradise")

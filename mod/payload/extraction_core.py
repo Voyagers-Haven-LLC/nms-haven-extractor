@@ -138,8 +138,13 @@ def build_planet_entry(
     flora = captured.get('flora_display') or captured.get('flora') or 'Unknown'
     fauna = captured.get('fauna_display') or captured.get('fauna') or 'Unknown'
     sentinel = captured.get('sentinel_display') or captured.get('sentinel') or 'Unknown'
-    weather_val = captured.get('weather_display') or captured.get('weather') or 'Unknown'
-    if clean_weather is not None and weather_val and weather_val != 'Unknown':
+    # 2.2.0 (Haven 2.16.0, one basis): `weather` is the parent = the game's weather CLASS
+    # (Dust, Humid... Haven maps it to its own wording), `weather_text` the exact text the game
+    # shows, never rewritten. Without a class read, the display string falls back into
+    # `weather` through clean_weather exactly as before.
+    weather_text = captured.get('weather_display') or ''
+    weather_val = captured.get('weather') or weather_text or 'Unknown'
+    if not captured.get('weather') and clean_weather is not None and weather_val and weather_val != 'Unknown':
         weather_val = clean_weather(weather_val)
 
     result = {
@@ -167,6 +172,11 @@ def build_planet_entry(
         result["storm_frequency"] = captured['storm_frequency']
     if captured.get('planet_description'):
         result["description"] = captured['planet_description']
+    if weather_text:
+        result["weather_text"] = weather_text
+    by_mode = captured.get('sentinels_by_mode')
+    if isinstance(by_mode, dict) and by_mode:
+        result["sentinels_by_mode"] = {k: v for k, v in by_mode.items() if k in ("Off", "Slow", "Normal", "Fast") and v}
     if captured.get('has_rings') is not None:
         result["has_rings"] = bool(captured['has_rings'])
     # 2.1.1: typed reads the backend columns were waiting for. None == not read

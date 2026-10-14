@@ -334,7 +334,10 @@ def test_display_adjective_preference():
     check("flora uses display 'Full' (not enum 'Bountiful')", p["flora_level"] == "Full", f"got {p['flora_level']}")
     check("fauna uses display 'Abundant'", p["fauna_level"] == "Abundant", f"got {p['fauna_level']}")
     check("sentinel uses display 'Observant'", p["sentinel_level"] == "Observant", f"got {p['sentinel_level']}")
-    check("weather uses display 'Heated Atmosphere'", p["weather"] == "Heated Atmosphere", f"got {p['weather']}")
+    # 2.2.0 (Haven 2.16.0): weather = the class (the parent), weather_text = the display text
+    check("weather is the class 'Scorched'", p["weather"] == "Scorched", f"got {p['weather']}")
+    check("weather_text is the display 'Heated Atmosphere'", p.get("weather_text") == "Heated Atmosphere",
+          f"got {p.get('weather_text')}")
 
     # Fallback: when no *_display was captured (left the system before PlanetInfo populated),
     # keep the enum tier rather than emitting blank.
@@ -343,15 +346,34 @@ def test_display_adjective_preference():
     p2 = _planet_builder(cap2, 1)
     check("flora falls back to enum when no display", p2["flora_level"] == "Bountiful", f"got {p2['flora_level']}")
     check("weather falls back to enum when no display", p2["weather"] == "Humid", f"got {p2['weather']}")
+    check("no weather_text without a display string", "weather_text" not in p2, f"got {p2.get('weather_text')}")
 
-    # clean_weather (passed by the caller) is applied to whichever weather value wins.
+    # clean_weather only ever touches the fallback (no class read); the display text is
+    # shipped exactly as the game shows it (2.2.0: it used to rewrite real adjectives).
     cap3 = dict(cap2)
     cap3["weather_display"] = "raw_weather 6"
     p3 = build_planet_entry(
         cap3, 2, translate_resource=_identity_translate, hidden_substance_names=_HIDDEN_NAMES,
         hidden_substance_ids=_HIDDEN_IDS, clean_weather=lambda w: w.upper(),
     )
-    check("clean_weather applied to chosen weather", p3["weather"] == "RAW_WEATHER 6", f"got {p3['weather']}")
+    check("class wins over display for weather", p3["weather"] == "Humid", f"got {p3['weather']}")
+    check("display text is never cleaned", p3.get("weather_text") == "raw_weather 6", f"got {p3.get('weather_text')}")
+    cap4 = dict(cap3)
+    cap4.pop("weather")
+    p4 = build_planet_entry(
+        cap4, 3, translate_resource=_identity_translate, hidden_substance_names=_HIDDEN_NAMES,
+        hidden_substance_ids=_HIDDEN_IDS, clean_weather=lambda w: w.upper(),
+    )
+    check("no class: clean_weather applied to the display fallback", p4["weather"] == "RAW_WEATHER 6", f"got {p4['weather']}")
+
+    # sentinels_by_mode: every game-mode slot's word passes through; junk slots are dropped
+    cap5 = dict(cap2)
+    cap5["sentinels_by_mode"] = {"Off": "Isolated", "Slow": "Low", "Normal": "Low", "Fast": "Attentive", "Bogus": "x"}
+    p5 = _planet_builder(cap5, 4)
+    check("sentinels_by_mode shipped (4 slots)",
+          p5.get("sentinels_by_mode") == {"Off": "Isolated", "Slow": "Low", "Normal": "Low", "Fast": "Attentive"},
+          f"got {p5.get('sentinels_by_mode')}")
+    check("no sentinels_by_mode when not read", "sentinels_by_mode" not in p2)
 
 
 def test_galaxy_is_known():

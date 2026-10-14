@@ -712,6 +712,28 @@ class CaptureHooksMixin:
     # haven-ui data tags exactly the DEFAULT words (Attentive, Require Orthodoxy,
     # Frequent...) "High Sentinel Activity" and the AGGRESSIVE/HIGH words
     # (Frenzied, Hostile Patrols, High Security...) "Aggressive Sentinel Activity".
+    # PlanetInfo.SentinelsPerDifficulty index = the Ground Combat Timers option; the game keeps
+    # one sentinel word per option (haven-gen api/web.py DIFFICULTY_SLOTS, same order)
+    SENTINEL_SLOTS = ("Off", "Slow", "Normal", "Fast")
+
+    def _read_sentinels_by_mode(self, sent_arr) -> dict:
+        """2.2.0: the sentinel word for every game-mode slot ({slot: word}), so Haven can show
+        the word for any game mode. Only slots that resolve to a word are returned."""
+        out = {}
+        for i, slot in enumerate(self.SENTINEL_SLOTS):
+            try:
+                val = str(sent_arr[i]) or ""
+            except Exception:
+                break
+            raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+            if raw == "None":
+                out[slot] = "None"
+            elif raw and len(raw) >= 2:
+                word = self._resolve_adjective(raw, 'sentinel')
+                if word:
+                    out[slot] = word
+        return out
+
     def _apply_sentinel_tags(self, captured: dict, raw_id: str):
         if not raw_id or not raw_id.startswith("SENTINEL_"):
             return
@@ -822,6 +844,9 @@ class CaptureHooksMixin:
                                 captured['sentinel_display'] = "None"   # a sentinel-free planet
                             elif raw and len(raw) >= 2:
                                 captured['sentinel_display'] = self._resolve_adjective(raw, 'sentinel')
+                            by_mode = self._read_sentinels_by_mode(sent_arr)
+                            if by_mode:
+                                captured['sentinels_by_mode'] = by_mode
 
                     # Weather
                     if hasattr(info, 'Weather'):
