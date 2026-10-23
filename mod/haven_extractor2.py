@@ -51,13 +51,13 @@ from api_local.server import LocalApi
 
 logger = logging.getLogger("haven_extractor2")
 
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 
 # Required memory hooks — the readiness gate checks these against pyMHF's
 # registry after load (June 16 2026: 'Unable to find offset for
 # cGcSolarSystem.Generate' and the mod still said "ready" — never again).
 REQUIRED_HOOKS = (
-    "cTkLanguageManagerBase.Translate_internal",   # NMSpy 180383+ renamed Translate
+    # 2.2.1: Translate_internal is no longer hooked (see the hook section below).
     "cGcSolarSystem.Generate",
     "cGcPlanetGenerator.GenerateCreatureRoles",
 )
@@ -178,6 +178,9 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         self._lang_n_live = 0
         self._lang_n_cache = 0
         self._lang_n_unresolved = 0
+        self._lang_n_offthread = 0         # 2.2.1: live calls refused off the game thread
+        self._game_language = ""           # 2.2.1: eLanguageRegion name ("English", "German"...)
+        self._game_thread_id = None        # 2.2.1: set by every hook (they run on the game thread)
         self._capture_enabled = False
         self._batch_mode_enabled = True     # v1 flag, always on in 2.0
         self._system_saved_to_batch = False
@@ -462,22 +465,20 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
 
     # ------------------------------------------------------- decorated hooks
 
-    @nms.cTkLanguageManagerBase.Translate_internal.after
-    def on_translate(self, this, lpacText, lpacDefaultReturnValue, _result_):
-        self._hook_last_fire["translate"] = time.time()
-        self._on_translate_impl(this, lpacText, lpacDefaultReturnValue, _result_)
-        # 2.1.2: NMSpy 181442 types this function's return as c_char_p64, a ctypes
-        # SUBCLASS. pyMHF's compound detour hands the original's result object straight
-        # back to ctypes, which cannot convert it ('c_char_p64' object cannot be
-        # interpreted as an integer) and the game receives garbage (-1, a stack leftover)
-        # for EVERY translated string: frozen on the logos, FSM already at MODESELECTOR
-        # (2026-10-12). pyMHF returns an after-hook's non-None value instead, so hand
-        # back the raw address as an int, which ctypes converts correctly. Must never
-        # raise: a raising detour is disabled by pyMHF and the object path returns.
-        return self._addr_of(_result_)
+    # 2.2.1: no hook on cTkLanguageManagerBase::Translate_internal. The game calls it for
+    # every string it draws, so a Python detour there ran thousands of times a second on the
+    # game thread (the lag/freeze reports, 2026-10-23) to learn one address. The language
+    # manager now comes from cTkLanguageManager::GetInstance (the same address — the 2.1.2
+    # logs print "GetInstance -> ... matches the game's Translate this"), and the mod calls
+    # Translate itself only for the ~30 ids a system needs (language/language_mixin.py).
+
+    def _note_game_thread(self):
+        """Hooks run on the game thread; remember it so live game calls never come from ours."""
+        self._game_thread_id = threading.get_ident()
 
     @nms.cGcSolarSystem.Generate.after
     def on_system_generate(self, this, lbUseSettingsFile, lSeed):
+        self._note_game_thread()
         self._hook_last_fire["generate"] = time.time()
         result = self._on_system_generate_impl(this, lbUseSettingsFile, lSeed)
         try:
@@ -489,6 +490,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
 
     @nms.cGcPlanetGenerator.GenerateCreatureRoles.after
     def on_creature_roles_generate(self, this, lPlanetData, lUA):
+        self._note_game_thread()
         self._hook_last_fire["creature_roles"] = time.time()
         result = self._on_creature_roles_generate_impl(this, lPlanetData, lUA)
         try:
@@ -531,7 +533,12 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
 
     @on_state_change("APPVIEW")
     def on_appview(self):
+        self._note_game_thread()
         self._hook_last_fire["appview"] = time.time()
+        try:
+            self._lang_refresh_language()        # 2.2.1: the player may have switched language
+        except Exception as e:
+            logger.debug(f"[LANG] language read failed: {e}")
         result = self._on_appview_impl()
         try:
             self._detect_game_mode()             # REVIVED (dead code in 1.x)
@@ -752,6 +759,10 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                 payload["reality"] = self._reality()
             except Exception as e:
                 logger.debug(f"[GAME_MODE] send-time stamp skipped: {e}")
+            # 2.2.1: the language the words were captured in (read on the game thread at
+            # APPVIEW; never re-read from here). Haven keys on planets[].text_ids.
+            if self._game_language and not payload.get("game_language"):
+                payload["game_language"] = self._game_language
             try:
                 result = self.sync.stage(payload)
                 self._journal_remove(payload.get("glyph_code"))

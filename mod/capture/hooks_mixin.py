@@ -797,6 +797,9 @@ class CaptureHooksMixin:
 
                     info = planet_data.PlanetInfo
                     captured = self._captured_planets[memory_name]
+                    # 2.2.1: the game's text ids behind each word, so Haven can key on the id
+                    # (the same in every language) and show the word in any language.
+                    text_ids = captured.setdefault('text_ids', {})
 
                     # 2.1.1: the discovery page's tags (Ancient Bones, Vile Brood,
                     # Salvageable Scrap...). ExtraResourceHints is filled after the
@@ -824,6 +827,7 @@ class CaptureHooksMixin:
                         val = str(info.Flora) or ""
                         raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
                         if raw and raw != "None" and len(raw) >= 2:
+                            text_ids['flora'] = raw
                             captured['flora_display'] = self._resolve_adjective(raw, 'flora')
 
                     # Fauna
@@ -831,6 +835,7 @@ class CaptureHooksMixin:
                         val = str(info.Fauna) or ""
                         raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
                         if raw and raw != "None" and len(raw) >= 2:
+                            text_ids['fauna'] = raw
                             captured['fauna_display'] = self._resolve_adjective(raw, 'fauna')
 
                     # Sentinel - indexed by the GroundCombatTimers option; "None" is real
@@ -843,6 +848,7 @@ class CaptureHooksMixin:
                             if raw == "None":
                                 captured['sentinel_display'] = "None"   # a sentinel-free planet
                             elif raw and len(raw) >= 2:
+                                text_ids['sentinel'] = raw
                                 captured['sentinel_display'] = self._resolve_adjective(raw, 'sentinel')
                             by_mode = self._read_sentinels_by_mode(sent_arr)
                             if by_mode:
@@ -854,6 +860,7 @@ class CaptureHooksMixin:
                         raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
                         if raw and raw != "None" and len(raw) >= 2:
                             captured['weather_raw_string'] = raw
+                            text_ids['weather'] = raw
                             captured['weather_display'] = self._resolve_adjective(raw, 'weather')
 
                     # 2.1.0: planet-type label. PlanetInfo is filled AFTER the capture hook,
@@ -866,6 +873,9 @@ class CaptureHooksMixin:
                             if hasattr(info, 'PlanetType'):
                                 cv = str(info.PlanetType) or ""
                                 cls_raw = ''.join(c for c in cv if c.isprintable() and ord(c) < 128).strip()
+                            text_ids['description'] = raw
+                            if cls_raw:
+                                text_ids['planet_class'] = cls_raw
                             label = planet_type_label(
                                 self._resolve_adjective(raw, 'description'),
                                 self._resolve_adjective(cls_raw, 'planet_class') if cls_raw else '',
@@ -881,7 +891,10 @@ class CaptureHooksMixin:
             if refreshed > 0:
                 logger.info(f"[EXPORT] Auto-refreshed adjectives for {refreshed} planet(s) | words resolved "
                             f"live: {getattr(self, '_lang_n_live', 0)}, from cache: {getattr(self, '_lang_n_cache', 0)}, "
-                            f"unresolved: {getattr(self, '_lang_n_unresolved', 0)}"
+                            f"unresolved: {getattr(self, '_lang_n_unresolved', 0)}, "
+                            f"language: {getattr(self, '_game_language', '') or '?'}"
+                            + (f", refused off-thread: {self._lang_n_offthread}"
+                               if getattr(self, '_lang_n_offthread', 0) else "")
                             + (" | LIVE TRANSLATE OFF this session" if getattr(self, '_lang_live_disabled', False) else ""))
             self._lang_n_live = self._lang_n_cache = self._lang_n_unresolved = 0
 

@@ -174,6 +174,11 @@ def build_planet_entry(
         result["description"] = captured['planet_description']
     if weather_text:
         result["weather_text"] = weather_text
+    # 2.2.1: the game's text ids behind the words (flora/fauna/sentinel/weather/description/
+    # planet_class) — the same in every language; the words above are the player's language.
+    text_ids = captured.get('text_ids')
+    if isinstance(text_ids, dict) and text_ids:
+        result["text_ids"] = {k: v for k, v in text_ids.items() if isinstance(v, str) and v}
     by_mode = captured.get('sentinels_by_mode')
     if isinstance(by_mode, dict) and by_mode:
         result["sentinels_by_mode"] = {k: v for k, v in by_mode.items() if k in ("Off", "Slow", "Normal", "Fast") and v}

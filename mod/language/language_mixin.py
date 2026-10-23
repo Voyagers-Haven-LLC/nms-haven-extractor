@@ -39,43 +39,9 @@ _LIVE_FAIL_LIMIT = 5        # consecutive failed live calls before the session f
 class LanguageMixin:
     """Live game Translate + Translate-hook cache + adjective cache + layered adjective resolution."""
 
-    # ---- source lines 1251-1290: on_translate ----
-
-    def _on_translate_impl(self, this, lpacText, lpacDefaultReturnValue, _result_):
-        """
-        Passive hook on the game's Translate function.
-        Captures (text_id -> display_text) pairs as the game resolves them.
-        This fires whenever the game renders text (UI, discovery pages, scanner).
-        """
-        try:
-            # 2.1.1: remember the language manager the game itself uses, so the live
-            # Translate path calls with a verified `this` (see _translate_live).
-            if not getattr(self, "_lang_manager_seen", 0):
-                seen = self._addr_of(this)
-                if seen > 0x10000:
-                    self._lang_manager_seen = seen
-            # 2.1.2: pyMHF hands both strings over as c_char_p64 (a c_uint64 subclass,
-            # NOT a pointer, so ctypes.cast() rejects it): read the address first.
-            text_id = self._cstr(lpacText)
-            if not text_id or not self._addr_of(_result_):
-                return
-
-            # Only capture adjective-related text IDs (+ planet-type descriptors)
-            if text_id.startswith(ADJECTIVE_PREFIXES) or DESCRIPTOR_ID_RE.match(text_id):
-                # Read the result string from the return value
-                try:
-                    display_text = self._cstr(_result_)
-                    if display_text:
-                        # Only store if it looks like valid display text (not another ID)
-                        if (len(display_text) >= 2 and
-                            not display_text.startswith(('RARITY_', 'SENTINEL_', 'WEATHER_', 'UI_'))):
-                            if text_id not in self._translation_cache:
-                                self._translation_cache[text_id] = display_text
-                                logger.debug(f"    [TRANSLATE] Captured: '{text_id}' -> '{display_text}'")
-                except Exception:
-                    pass
-        except Exception:
-            pass  # Never crash the game from a translation hook
+    # 2.2.1: the passive Translate hook (_on_translate_impl, transplanted from 1.x) is gone.
+    # It ran for every string the game draws to learn one address; see _lang_ensure_manager.
+    # _translation_cache stays as an (empty) resolver layer so _resolve_adjective is unchanged.
 
     # ---- 2.1.1: live Translate - the game resolves ids itself ----------------
     #
@@ -97,8 +63,9 @@ class LanguageMixin:
     # LP_TkID<0x20> (ctypes.pointer() builds a different class with the same name).
     #
     # Safety:
-    #   * `this` is ONLY the address the game itself passes to Translate, captured by the
-    #     passive hook. GetInstance is logged once for comparison and never used to call.
+    #   * `this` is the language manager from cTkLanguageManager::GetInstance (2.2.1; until
+    #     2.1.2 it was captured by a passive Translate hook, and the 2.1.2 logs show both
+    #     addresses are the same). Only ever called on the game thread.
     #   * the default is a real 32-byte TkID holding the id, never NULL, so the game never
     #     dereferences a null pointer. Ids of 32+ bytes skip the live path; none exist
     #     (the longest known id is 31 characters).
@@ -178,9 +145,15 @@ class LanguageMixin:
             return None
         if not raw or len(raw) >= _TKID_DEFAULT_SIZE:
             return None
-        mgr = getattr(self, "_lang_manager_seen", 0)
+        # 2.2.1: the game is only ever called from its own thread (the hooks). A call from
+        # one of ours (settle loop, local API, uploader) gets the remembered answer or None.
+        game_tid = getattr(self, "_game_thread_id", None)
+        if game_tid is not None and threading.get_ident() != game_tid:
+            self._lang_n_offthread = getattr(self, "_lang_n_offthread", 0) + 1
+            return None
+        mgr = self._lang_ensure_manager()
         if not mgr:
-            return None   # the game has not called Translate yet: early, not a failure
+            return None   # the language manager is not up yet: early, not a failure
         self._lang_in_live_call = True
         try:
             _lp_base, _cp64, lp_tkid = self._lang_arg_types()
@@ -225,14 +198,59 @@ class LanguageMixin:
         results[text_id] = text
         if not getattr(self, "_lang_live_announced", False):
             self._lang_live_announced = True
-            logger.info(f"[TRANSLATE-LIVE] working: {text_id!r} -> {text!r} (game's Translate this 0x{mgr:X})")
-            try:
-                gi = self._addr_of(self._lang_getinstance_fn()())
-                logger.info(f"[TRANSLATE-LIVE] GetInstance -> 0x{gi:X} "
-                            f"({'matches' if gi == mgr else 'DIFFERS from'} the game's Translate this)")
-            except Exception as e:
-                logger.info(f"[TRANSLATE-LIVE] GetInstance comparison failed: {e}")
+            logger.info(f"[TRANSLATE-LIVE] working: {text_id!r} -> {text!r} "
+                        f"(language manager 0x{mgr:X}, game language {getattr(self, '_game_language', '') or '?'})")
         return text
+
+    # ---- 2.2.1: the language manager without a Translate hook -----------------------
+
+    def _lang_ensure_manager(self) -> int:
+        """The game's language manager address, looked up ONCE via GetInstance.
+
+        2.1.2 learned it from a passive hook on Translate_internal, which the game calls for
+        every string it draws; the 2.1.2 logs show GetInstance returns the same address.
+        Only called on the game thread (_translate_live checks). 0 while not available."""
+        mgr = getattr(self, "_lang_manager_seen", 0)
+        if mgr:
+            return mgr
+        try:
+            gi = self._addr_of(self._lang_getinstance_fn()())
+        except Exception as e:
+            if not getattr(self, "_lang_gi_warned", False):
+                self._lang_gi_warned = True
+                logger.warning(f"[TRANSLATE-LIVE] GetInstance failed: {e.__class__.__name__}: {e}")
+            return 0
+        if gi > 0x10000:
+            self._lang_manager_seen = gi
+            logger.info(f"[TRANSLATE-LIVE] language manager via GetInstance: 0x{gi:X}")
+            try:
+                self._lang_refresh_language()
+            except Exception:
+                pass
+            return gi
+        return 0
+
+    def _lang_refresh_language(self) -> str:
+        """Read the game's current language (cTkLanguageManagerBase.meRegion) on the game thread.
+        A change clears the remembered live words so the next system resolves in the new language."""
+        game_tid = getattr(self, "_game_thread_id", None)
+        if game_tid is not None and threading.get_ident() != game_tid:
+            return getattr(self, "_game_language", "")
+        mgr = getattr(self, "_lang_manager_seen", 0) or self._lang_ensure_manager()
+        if not mgr:
+            return getattr(self, "_game_language", "")
+        from pymhf.core.memutils import map_struct
+        region = map_struct(mgr, nms.cTkLanguageManagerBase).meRegion
+        name = getattr(region, "name", None) or str(region)
+        if name and name != getattr(self, "_game_language", ""):
+            if getattr(self, "_game_language", ""):
+                logger.info(f"[LANG] game language changed {self._game_language} -> {name}; "
+                            f"live words re-resolve")
+                (getattr(self, "_lang_live_results", None) or {}).clear()
+            else:
+                logger.info(f"[LANG] game language: {name}")
+            self._game_language = name
+        return self._game_language
 
     # ---- source lines 1292-1388: _load_adjective_cache + _resolve_adjective ----
     def _load_adjective_cache(self):

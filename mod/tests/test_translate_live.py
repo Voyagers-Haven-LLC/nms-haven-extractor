@@ -86,6 +86,7 @@ def main():
             return ctypes.cast(lpacDefault, ctypes.c_void_p).value
 
         def get_instance(self):
+            self.gi_calls = getattr(self, "gi_calls", 0) + 1
             return self.instance
 
     class Events:
@@ -127,29 +128,30 @@ def main():
 
     ok = True
 
-    # 1. before the game has ever called Translate: no live call, the cache answers
+    # 1. the language manager is not up yet (GetInstance -> 0): no live call, the cache answers
     g = FakeGame({"RARITY_HIGH3": "Bountiful"})
-    g.instance = MANAGER_ADDR
+    g.instance = 0
     r = rig(g, {"RARITY_HIGH3": "CacheBountiful"})
-    ok &= check("before the game's first Translate: live path waits and the cache answers",
+    ok &= check("manager not up yet (GetInstance 0): live path waits and the cache answers",
                 r._resolve_adjective("RARITY_HIGH3", "flora") == "CacheBountiful" and g.calls == 0
                 and r._lang_n_cache == 1 and r._lang_n_live == 0)
+    ok &= check("a 0 from GetInstance is never stored as the manager", r._lang_manager_seen == 0)
 
-    # 2. the passive hook captures the game's own `this`
-    result_buf = ctypes.create_string_buffer(b"Bountiful")
-    r._on_translate_impl(this_from_game, b"RARITY_HIGH3", None, ctypes.addressof(result_buf))
-    ok &= check("passive hook captures the manager address the game passes", r._lang_manager_seen == MANAGER_ADDR)
+    # 2. 2.2.1: the manager comes from GetInstance (no Translate hook), looked up ONCE
+    g.instance = MANAGER_ADDR
+    g.gi_calls = 0
+    ok &= check("GetInstance supplies the manager address",
+                r._lang_ensure_manager() == MANAGER_ADDR and r._lang_manager_seen == MANAGER_ADDR)
+    r._lang_ensure_manager()
+    r._lang_ensure_manager()
+    ok &= check("GetInstance is called once, then the address is remembered", g.gi_calls == 1)
 
-    # 2b. the shapes pyMHF really hands the passive hook: c_char_p64 for BOTH strings
-    #     (a c_uint64 subclass that ctypes.cast() rejects - the 2.1.1 capture silently
-    #     did nothing). The pair must land in the translation cache.
+    # 2b. negative control kept from 2.1.2: pyMHF's c_char_p64 is not a pointer to ctypes
     from pymhf.extensions.ctypes import c_char_p64
     id_buf = ctypes.create_string_buffer(b"RARITY_MID5")
     word_buf = ctypes.create_string_buffer(b"Ordinary")
-    r._on_translate_impl(this_from_game, c_char_p64(ctypes.addressof(id_buf)), None,
-                         c_char_p64(ctypes.addressof(word_buf)))
-    ok &= check("passive hook decodes c_char_p64 text and result into the translation cache",
-                r._translation_cache.get("RARITY_MID5") == "Ordinary")
+    ok &= check("_cstr reads c_char_p64 text (the shape pyMHF hands over)",
+                r._cstr(c_char_p64(ctypes.addressof(word_buf))) == "Ordinary")
     try:
         ctypes.cast(c_char_p64(ctypes.addressof(id_buf)), ctypes.c_char_p)
         cast_rejects = False
@@ -223,17 +225,39 @@ def main():
     ok &= check("a None return (pyMHF caught an error) trips the breaker instead of repeating",
                 r3._lang_live_disabled)
 
-    # 11. the passive hook never raises on junk (pyMHF permanently disables a detour that raises)
-    r4 = rig(FakeGame({}))
-    try:
-        r4._on_translate_impl(None, None, None, None)
-        r4._on_translate_impl(object(), b"RARITY_HIGH3", None, 0)
-        r4._on_translate_impl(12, b"x", None, 5)
-        raised = False
-    except Exception:
-        raised = True
-    ok &= check("passive hook swallows junk arguments", not raised)
-    ok &= check("junk never becomes the captured manager address", r4._lang_manager_seen == 0)
+    # 11. 2.2.1: the game is only called from its own thread. A call from one of the mod's
+    #     threads (settle loop, uploader, local API) gets the remembered word or nothing.
+    import threading
+    g4 = FakeGame({"RARITY_HIGH3": "Bountiful", "RARITY_LOW1": "Sparse"})
+    g4.instance = MANAGER_ADDR
+    r4 = rig(g4, {})
+    r4._game_thread_id = threading.get_ident()          # this thread plays the game thread
+    ok &= check("on the game thread the live call runs", r4._translate_live("RARITY_HIGH3") == "Bountiful")
+    calls = g4.calls
+    box = {}
+    t = threading.Thread(target=lambda: box.update(
+        known=r4._translate_live("RARITY_HIGH3"), unknown=r4._translate_live("RARITY_LOW1")))
+    t.start(); t.join()
+    ok &= check("off the game thread: an id already resolved comes back from memory",
+                box.get("known") == "Bountiful")
+    ok &= check("off the game thread: a new id is refused, never sent to the game",
+                box.get("unknown") is None and g4.calls == calls and r4._lang_n_offthread == 1)
+
+    # 11b. the game's language (cTkLanguageManagerBase.meRegion at +0x8), read from real memory
+    manager[8] = 4                                       # eLanguageRegion.German
+    r4._game_language = ""
+    ok &= check("game language read from the manager (German)", r4._lang_refresh_language() == "German")
+    r4._lang_live_results["RARITY_HIGH3"] = "Bountiful"
+    manager[8] = 2                                       # the player switches to French
+    ok &= check("a language switch is noticed", r4._lang_refresh_language() == "French")
+    ok &= check("a language switch forgets the old words so they re-resolve",
+                "RARITY_HIGH3" not in r4._lang_live_results)
+    manager[8] = 0
+    box.clear()
+    t = threading.Thread(target=lambda: box.update(lang=r4._lang_refresh_language()))
+    t.start(); t.join()
+    ok &= check("off the game thread the language is never re-read (last value comes back)",
+                box.get("lang") == "French")
 
     # 12. negative controls: the two traps the implementation avoids are real
     tk = basic.TkID[0x20](b"RARITY_HIGH3")
@@ -308,40 +332,20 @@ def main():
                 < body.index("if text_id in self._adjective_file_cache")
                 < body.index("DESCRIPTOR_ID_RE.match(text_id)):\n            return text_id"))
 
-    # 15. the RETURN path of the passive hook. NMSpy 181442 types Translate_internal's
-    #     return as c_char_p64 (a ctypes subclass). pyMHF's compound detour returns the
-    #     original's result object straight to ctypes, which cannot convert it, and the
-    #     game receives garbage (-1 or a stack leftover) for every string (frozen on
-    #     the logos, 2026-10-12). The
-    #     after-hook must therefore return the raw address so pyMHF returns an int.
+    # 15. 2.2.1: the mod no longer hooks Translate_internal at all (the game calls it for
+    #     every string it draws: the lag/freeze reports). pyMHF registers hooks from the
+    #     decorated methods in the class __dict__, so no method may carry that hook.
     from pymhf.core.importing import import_file
     hx = import_file(str(MOD / "haven_extractor2.py"))
-    on_translate = hx.HavenExtractor2.__dict__["on_translate"]
-    r6 = rig(FakeGame({}))
-    r6._hook_last_fire = {}
-    game_result = c_char_p64(ctypes.addressof(word_buf))
-    hook_ret = on_translate(r6, this_from_game, c_char_p64(ctypes.addressof(id_buf)), None, game_result)
-    ok &= check("after-hook returns the raw address as an int (what pyMHF hands back to ctypes)",
-                isinstance(hook_ret, int) and hook_ret == ctypes.addressof(word_buf))
-    ok &= check("after-hook still captured the pair while doing so",
-                r6._translation_cache.get("RARITY_MID5") == "Ordinary")
-    ok &= check("after-hook returns 0 (not None) for a NULL result, so pyMHF never falls back to the object",
-                on_translate(r6, this_from_game, c_char_p64(ctypes.addressof(id_buf)), None, c_char_p64(0)) == 0)
-
-    def game_sees(py_return):
-        """What the game receives from a pyMHF detour whose callback returns py_return."""
-        cb = ctypes.CFUNCTYPE(funcdef.restype, ctypes.c_void_p)(lambda this: py_return)
-        raw = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_void_p)(ctypes.cast(cb, ctypes.c_void_p).value)
-        return raw(0)
-
-    import io, contextlib
-    with contextlib.redirect_stderr(io.StringIO()):   # ctypes prints the ignored conversion error
-        broken = game_sees(game_result)
-    ok &= check("negative control: returning the c_char_p64 object hands the game garbage, never the string (the freeze)",
-                broken != ctypes.addressof(word_buf))
-    ok &= check("returning the int hands the game the real string pointer",
-                game_sees(hook_ret) == ctypes.addressof(word_buf)
-                and ctypes.string_at(game_sees(hook_ret)) == b"Ordinary")
+    hooked = [name for name, fn in hx.HavenExtractor2.__dict__.items()
+              if "Translate" in str(getattr(fn, "_hook_func_name", ""))]
+    ok &= check("no method of the mod hooks Translate_internal", hooked == [] and
+                "on_translate" not in hx.HavenExtractor2.__dict__)
+    ok &= check("Translate_internal is not a required hook any more",
+                not any("Translate" in h for h in hx.REQUIRED_HOOKS))
+    gen = hx.HavenExtractor2.__dict__.get("on_system_generate")
+    ok &= check("positive control: the other hooks still carry pyMHF's hook marker",
+                gen is not None and "Generate" in str(getattr(gen, "_hook_func_name", "")))
 
     print()
     print("ALL PASS" if ok else "FAILURES PRESENT")
