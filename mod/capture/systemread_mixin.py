@@ -388,7 +388,13 @@ class SystemReadMixin:
         """Refresh game_mode from the typed sources. Returns the game mode, or ''
         while nothing has been read yet (the upload then omits the field rather
         than claim Normal)."""
-        app_mode = self._read_app_game_mode()
+        # 2.3.0: the application singleton is read on the game thread only; the uploader,
+        # settle and command threads get the value the hooks last read.
+        game_tid = getattr(self, "_game_thread_id", None)
+        if game_tid is None or threading.get_ident() == game_tid:
+            app_mode = self._read_app_game_mode()
+        else:
+            app_mode = self._app_game_mode
         if app_mode and app_mode != self._app_game_mode:
             logger.info(f"[GAME_MODE] application mode: {app_mode}")
             self._app_game_mode = app_mode

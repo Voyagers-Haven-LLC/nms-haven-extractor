@@ -31,6 +31,7 @@ normaliser (plan A2) owns cleaning those historically.
 import re
 from typing import Any, Dict, Iterator, List, Tuple
 
+from payload.extraction_core import validated_system_name
 from capture.offsets import (  # display label tables (no offsets live there any more)
     ALIEN_RACES, CONFLICT_LEVELS, STAR_TYPES, TRADING_CLASSES, WEALTH_CLASSES,
 )
@@ -76,9 +77,13 @@ def payload_sanity_problems(payload: Dict[str, Any], max_bodies: int = MAX_BODIE
     if not isinstance(payload, dict):
         return ["payload is not a dict"]
 
-    name = str(payload.get("system_name") or "").strip()
-    if not name:
+    # 2.3.0: a name made of control characters (the 0x2274 raw read, pre-2.3.0) is
+    # refused whole, never stripped into a different wrong name.
+    raw_name = payload.get("system_name")
+    if not str(raw_name or "").strip():
         problems.append("empty system name")
+    elif not validated_system_name(raw_name):
+        problems.append(f"non-printable system name {str(raw_name)!r}")
 
     glyph = str(payload.get("glyph_code") or "")
     if not GLYPH_RE.match(glyph):

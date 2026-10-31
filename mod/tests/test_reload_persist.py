@@ -43,7 +43,7 @@ def main():
         ok &= check("persisted attributes read/write through self.persist",
                     a._batch_systems is a.persist.batch_systems and a.events is a.persist.events)
         a._batch_systems.append({"glyph_code": "0123456789AB", "system_name": "Keep Me"})
-        a._enqueued_glyphs.add("0123456789AB")
+        a._enqueued_keys.add("0123456789AB")
         a._game_mode = "Permadeath"
         a._captured_planets["Planet X"] = {"planet_name": "Planet X", "biome": "Lush"}
         a.events.emit("SESSION", "history line that must survive")
@@ -54,7 +54,7 @@ def main():
         setattr(b, "persist", a.persist)
         ok &= check("fresh instance starts empty, then inherits batch/glyphs/mode/capture after the swap",
                     fresh_batch_empty and b._batch_systems[0]["system_name"] == "Keep Me"
-                    and "0123456789AB" in b._enqueued_glyphs and b._game_mode == "Permadeath"
+                    and "0123456789AB" in b._enqueued_keys and b._game_mode == "Permadeath"
                     and "Planet X" in b._captured_planets)
         ok &= check("terminal history survives the swap",
                     any("history line" in e.get("message", "") for e in b.events.snapshot()) if hasattr(b.events, "snapshot")

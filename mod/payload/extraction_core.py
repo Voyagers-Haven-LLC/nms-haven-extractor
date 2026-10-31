@@ -21,6 +21,85 @@ import re
 from collections import Counter
 from typing import Optional, List, Tuple, Dict, Any, Callable
 
+
+# --- 2.3.0: system identity + name validation (pure) ---------------------------------
+# Both came out of kingager's review of 2.1.2 (Oct 2026). A Budullangr capture shipped
+# system_name = U+0006: the raw memory read handed back a lone control character, it
+# was truthy, and it overrode the procedural name. 466 live systems carry such names.
+
+def validated_system_name(value: Any) -> str:
+    """A system name only if every character is printable; '' otherwise.
+
+    Deliberately rejects the WHOLE value rather than stripping the bad characters:
+    stripping would turn '\\x17 Everion' into 'Everion', which is just a different
+    wrong name. An empty result lets the caller fall back (snapshot / procedural)."""
+    if not isinstance(value, str) or not value:
+        return ""
+    if not all(c.isprintable() for c in value):
+        return ""
+    return value.strip()
+
+
+def choose_system_name(coords_name: Any, snapshot_name: Any, procedural_name: Any,
+                       glyph_code: str) -> str:
+    """The upload's name, in the precedence the payload always used: the in-game /
+    renamed name from coords, the live snapshot name, the procedural name. A
+    'System_<glyph>' placeholder only wins when nothing better validates."""
+    candidates = [validated_system_name(v) for v in (coords_name, snapshot_name, procedural_name)]
+    for value in candidates:
+        if value and not value.startswith("System_"):
+            return value
+    return next((v for v in candidates if v), f"System_{glyph_code or ''}")
+
+
+def system_key(payload: Dict[str, Any]) -> str:
+    """The identity a capture is deduplicated under: galaxy + glyph.
+
+    The same 12-glyph address exists in every galaxy; 44 charted addresses already
+    sit in more than one. Keying on the glyph alone (2.0 - 2.2) skipped the second
+    galaxy's system as a duplicate. Euclid is galaxy_index 0, a valid index."""
+    index = payload.get("galaxy_index")
+    if payload.get("galaxy_unknown"):
+        galaxy = "unknown"
+    elif isinstance(index, int) and not isinstance(index, bool) and 0 <= index <= 255:
+        galaxy = f"index:{index}"
+    else:
+        galaxy = f"name:{str(payload.get('galaxy_name') or '').strip().casefold() or '?'}"
+    return f"{galaxy}|{str(payload.get('glyph_code') or '').strip().upper()}"
+
+
+_UNRESOLVED_ID_RE = re.compile(r'^(?:[A-Z]+_[A-Z0-9_]+|[A-Z]+\d{1,2}|PLANETCLASS\d+)$')
+_DISPLAY_FIELDS = ('flora_display', 'fauna_display', 'sentinel_display', 'weather_display',
+                   'planet_description')
+
+
+def capture_readiness(captured_planets: Dict[str, Any], snapshot: Optional[Dict[str, Any]]) -> Tuple[bool, str]:
+    """Is the current system's live capture complete enough to freeze now?
+
+    Pure. Used by the bounded late-refresh (2.3.0): PlanetInfo (the discovery-page
+    words) and the plant line fill in AFTER the capture hooks, sometimes after the
+    first APPVIEW. When this says no, the mod re-reads a few more times on later
+    game-thread events, then freezes whatever it has - it never holds a system
+    forever (Haven grades partial systems server-side).
+
+    Complete == the body count is known, every one of those bodies is named, and
+    each has its display words (not an unresolved id) and a read plant line."""
+    expected = (snapshot or {}).get('_planets_count')
+    if not isinstance(expected, int) or isinstance(expected, bool) or not 1 <= expected <= 6:
+        return False, 'body count not read'
+    named = [body for _, body in select_captures(captured_planets) if _capture_has_name(body)]
+    if len(named) < expected:
+        return False, f'{len(named)}/{expected} named bodies captured'
+    for body in named:
+        missing = [f for f in _DISPLAY_FIELDS
+                   if not body.get(f) or body.get(f) == 'Unknown' or _UNRESOLVED_ID_RE.match(str(body.get(f)))]
+        if body.get('plant_source') not in ('game', 'none'):
+            missing.append('plant line')
+        if missing:
+            return False, f"{body.get('planet_name')}: missing {', '.join(missing)}"
+    return True, f'{expected}/{expected} bodies with discovery details'
+
+
 # Galaxy index is a 0-255 value; 0 == Euclid. UNKNOWN (None) must NEVER be silently
 # turned into Euclid by callers - it means "we could not read the galaxy", which is
 # a different fact from "we are in Euclid".
@@ -322,23 +401,14 @@ def build_system_payload(
     # --- System name resolution (mirrors the prior cache-fed precedence) ----------
     # Precedence: manual/actual name (from coords) -> live game-state name (from the
     # snapshot) -> procedural name. The coords name already folds in any in-game/actual
-    # name; the snapshot name is the "In the X system" game-state string captured live.
-    manual_name = (coords.get('system_name') or '')
+    # name; the snapshot name is the game's own Name field captured live.
+    # 2.3.0: every candidate is validated first - a control character is not a name.
+    manual_name = validated_system_name(coords.get('system_name'))
     has_manual_name = bool(manual_name) and not manual_name.startswith('System_')
-    if has_manual_name:
-        data['system_name'] = manual_name
-    else:
-        current_name = data.get('system_name') or ''
-        if (not current_name) or current_name.startswith('System_'):
-            snap_name = (sys_props.get('system_name') or '')
-            if snap_name and not snap_name.startswith('System_'):
-                data['system_name'] = snap_name
-
+    procedural_name = validated_system_name(procedural_name) or f"System_{coords.get('glyph_code', '')}"
     data['procedural_name'] = procedural_name
-
-    current_name = data.get('system_name') or ''
-    if (not current_name) or current_name.startswith('System_'):
-        data['system_name'] = procedural_name
+    data['system_name'] = choose_system_name(manual_name, sys_props.get('system_name'),
+                                             procedural_name, coords.get('glyph_code', ''))
 
     final_name = data.get('system_name') or ''
     if procedural_name and final_name and final_name != procedural_name:

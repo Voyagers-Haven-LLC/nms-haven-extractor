@@ -28,6 +28,21 @@ from payload.tables import translate_resource, clean_weather_string, EXOTIC_TROP
 from payload.extraction_core import planet_type_label
 
 
+def _display_text(val) -> str:
+    """A PlanetInfo display string (or a planet name) as clean text. Keeps every
+    printable character: these are the words the player sees, in the player's
+    language. 2.1.x dropped everything past ASCII, so 'Gewöhnlich' uploaded as
+    'Gewhnlich' (kingager's German client, 2026-10). Game KEYS (hint ids, substance
+    ids) stay ASCII-only via _ascii_id - a key is ASCII by definition."""
+    text = str(val) if val is not None else ""
+    return ''.join(c for c in text if c.isprintable()).strip()
+
+
+def _ascii_id(val) -> str:
+    text = str(val) if val is not None else ""
+    return ''.join(c for c in text if c.isprintable() and ord(c) < 128).strip()
+
+
 class CaptureHooksMixin:
     """The capture hook bodies (decorators live on the final class; these are the verbatim implementations)."""
 
@@ -377,7 +392,7 @@ class CaptureHooksMixin:
                     if name_val is not None:
                         name_str = str(name_val) or ""
                         # Clean to printable ASCII only
-                        planet_name = ''.join(c for c in name_str if c.isprintable() and ord(c) < 128)
+                        planet_name = _display_text(name_str)
                         # Validate it looks like a real name
                         if planet_name and (len(planet_name) < 2 or planet_name == "None"):
                             planet_name = ""
@@ -409,7 +424,7 @@ class CaptureHooksMixin:
                     # Flora display string - cTkFixedString0x80 at offset 0x280
                     if hasattr(info, 'Flora'):
                         val = str(info.Flora) or ""
-                        flora_display = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        flora_display = _display_text(val)
                         if flora_display and flora_display != "None" and len(flora_display) >= 2:
                             flora_display = self._resolve_adjective(flora_display, 'flora')
                             logger.info(f"    [DISPLAY] Flora: '{flora_display}'")
@@ -419,7 +434,7 @@ class CaptureHooksMixin:
                     # Fauna display string - cTkFixedString0x80 at offset 0x200
                     if hasattr(info, 'Fauna'):
                         val = str(info.Fauna) or ""
-                        fauna_display = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        fauna_display = _display_text(val)
                         if fauna_display and fauna_display != "None" and len(fauna_display) >= 2:
                             fauna_display = self._resolve_adjective(fauna_display, 'fauna')
                             logger.info(f"    [DISPLAY] Fauna: '{fauna_display}'")
@@ -432,7 +447,7 @@ class CaptureHooksMixin:
                         sent_arr = info.SentinelsPerDifficulty
                         if hasattr(sent_arr, '__getitem__'):
                             val = str(sent_arr[self._get_difficulty_index()]) or ""
-                            sentinel_display = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                            sentinel_display = _display_text(val)
                             # "None" is the game's real value for a sentinel-free planet
                             # (Haven counts it as filled) — keep it rather than fall back
                             # to the combat tier label (2.1.1).
@@ -447,7 +462,7 @@ class CaptureHooksMixin:
                     # Weather display string - cTkFixedString0x80 at offset 0x480
                     if hasattr(info, 'Weather'):
                         val = str(info.Weather) or ""
-                        weather_display = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        weather_display = _display_text(val)
                         if weather_display and weather_display != "None" and len(weather_display) >= 2:
                             weather_display = self._resolve_adjective(weather_display, 'weather')
                             logger.info(f"    [DISPLAY] Weather: '{weather_display}'")
@@ -457,7 +472,7 @@ class CaptureHooksMixin:
                     # v1.4.0: PlanetDescription - biome adjective text ID (e.g., "Paradise Planet")
                     if hasattr(info, 'PlanetDescription'):
                         val = str(info.PlanetDescription) or ""
-                        planet_description = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        planet_description = _display_text(val)
                         if planet_description and planet_description != "None" and len(planet_description) >= 2:
                             logger.info(f"    [DISPLAY] PlanetDescription: '{planet_description}'")
                         else:
@@ -466,7 +481,7 @@ class CaptureHooksMixin:
                     # v1.4.0: PlanetType - planet type display string
                     if hasattr(info, 'PlanetType'):
                         val = str(info.PlanetType) or ""
-                        planet_type_display = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        planet_type_display = _display_text(val)
                         if planet_type_display and planet_type_display != "None" and len(planet_type_display) >= 2:
                             logger.info(f"    [DISPLAY] PlanetType: '{planet_type_display}'")
                         else:
@@ -528,6 +543,7 @@ class CaptureHooksMixin:
                 logger.debug(f"    [CAPTURE] Updating existing capture for '{planet_key}' (hook fired again)")
 
             # Store captured planet data
+            self._capture_dirty = True      # 2.3.0: the hook wrapper publishes only on real captures
             self._captured_planets[planet_key] = {
                 'flora_raw': flora_raw,
                 'flora': flora_name,
@@ -644,12 +660,57 @@ class CaptureHooksMixin:
 
         # Auto-save to batch when APPVIEW fires (if not already saved)
         if self._batch_mode_enabled and self._captured_planets and not self._system_saved_to_batch:
-            self._auto_refresh_for_export()
+            self._late_refresh_tries = 0
+            self._refresh_then_freeze('APPVIEW')
+        elif self._system_saved_to_batch:
+            logger.debug(f"[BATCH] Already saved, {len(self._batch_systems)} in batch")
+
+    # 2.3.0: bounded late refresh. PlanetInfo (the discovery words) and the plant line
+    # fill in after the capture hooks, sometimes after the first APPVIEW; 2.1.x froze
+    # whatever was there. Now an incomplete read is re-done on the next game-thread
+    # events (autosave, load, a further planet fire, the next APPVIEW), at least
+    # LATE_REFRESH_GAP apart and at most LATE_REFRESH_MAX times, then the system is
+    # frozen regardless - never held (Haven grades partial systems server-side), and
+    # never from a per-frame hook or a mod thread.
+    LATE_REFRESH_MAX = 6
+    LATE_REFRESH_GAP = 5.0
+
+    def _refresh_then_freeze(self, trigger: str):
+        """Game thread only. Re-read the live details; freeze when complete or out of tries."""
+        from payload.extraction_core import capture_readiness
+        self._late_refresh_tries = getattr(self, '_late_refresh_tries', 0) + 1
+        self._late_refresh_last = time.time()
+        self._auto_refresh_for_export()
+        complete, detail = capture_readiness(self._captured_planets, self._current_system_snapshot)
+        if complete or self._late_refresh_tries >= self.LATE_REFRESH_MAX:
+            if not complete:
+                logger.info(f"[CAPTURE] freezing after {self._late_refresh_tries} reads, still: {detail}")
+            else:
+                logger.info(f"[CAPTURE] complete on read {self._late_refresh_tries} ({trigger}): {detail}")
             self._save_current_system_to_batch()
             self._system_saved_to_batch = True
             self._capture_enabled = False
-        elif self._system_saved_to_batch:
-            logger.debug(f"[BATCH] Already saved, {len(self._batch_systems)} in batch")
+            if trigger != 'APPVIEW':
+                # the APPVIEW wrapper drains + publishes itself; a late freeze must do it here
+                try:
+                    self._drain_batch_to_sync()
+                    self._publish_current()
+                except Exception as e:
+                    logger.error(f"[CAPTURE] late freeze staging failed: {e}")
+            return True
+        logger.info(f"[CAPTURE-WAIT] read {self._late_refresh_tries}/{self.LATE_REFRESH_MAX} ({trigger}): "
+                    f"{detail} - re-reading on the next game event")
+        return False
+
+    def _maybe_late_refresh(self, trigger: str) -> bool:
+        """Called from game-thread hooks after APPVIEW left a system unfrozen. Cheap no-op otherwise."""
+        if self._system_saved_to_batch or self._pending_extraction or not self._captured_planets:
+            return False
+        if not self._current_system_coords or not getattr(self, '_late_refresh_tries', 0):
+            return False          # nothing started a late-refresh window
+        if time.time() - getattr(self, '_late_refresh_last', 0.0) < self.LATE_REFRESH_GAP:
+            return False
+        return self._refresh_then_freeze(trigger)
 
     # ---- source lines 2622-2718: _auto_refresh_for_export ----
     # The discovery page's tag hints. Ids confirmed live 2026-09-15 and 09-25:
@@ -699,7 +760,8 @@ class CaptureHooksMixin:
                     matched = True
             if not matched:
                 unknown.append(f"{hint_id}={words!r}" if words and words != up else hint_id)
-        if complete and not captured.get('plant_resource'):
+        if (complete and not captured.get('plant_resource')
+                and not any(str(h).upper().startswith('PLANT_') for h in (hint_ids or ()))):
             captured['plant_source'] = 'none'
         if log_name and hint_ids:
             tags = [f for f, _, _ in self._HINT_TAGS if captured.get(f)]
@@ -725,7 +787,7 @@ class CaptureHooksMixin:
                 val = str(sent_arr[i]) or ""
             except Exception:
                 break
-            raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+            raw = _display_text(val)
             if raw == "None":
                 out[slot] = "None"
             elif raw and len(raw) >= 2:
@@ -757,6 +819,20 @@ class CaptureHooksMixin:
         self._snapshot_system_properties()
 
         if not self._captured_planets or not self._cached_solar_system:
+            return
+        # 2.3.0: the solar-system object is recycled by the game. Never read planet
+        # details out of it unless it still carries OUR system's seed (the same check
+        # the snapshot uses) - a refresh during galaxy-map browsing used to stamp a
+        # neighbour's words onto the current system.
+        try:
+            live_seed = int(self._cached_solar_system.mSolarSystemData.Seed.Seed)
+        except Exception as e:
+            logger.debug(f"[EXPORT] refresh skipped: seed unreadable ({e})")
+            return
+        identity = getattr(self, '_snapshot_identity_seed', 0)
+        if identity and live_seed != identity:
+            logger.warning(f"[EXPORT] refresh skipped: live system seed {live_seed:#x} != "
+                           f"current {identity:#x} (another system is in memory)")
             return
 
         try:
@@ -797,6 +873,10 @@ class CaptureHooksMixin:
 
                     info = planet_data.PlanetInfo
                     captured = self._captured_planets[memory_name]
+                    # 2.3.0: an empty hint list before PlanetInfo is filled is 'not yet',
+                    # not 'no plant' - only a filled PlanetInfo makes the read complete.
+                    info_ready = all(_display_text(getattr(info, key, '')) not in ('', 'None')
+                                     for key in ('Weather', 'PlanetDescription'))
                     # 2.2.1: the game's text ids behind each word, so Haven can key on the id
                     # (the same in every language) and show the word in any language.
                     text_ids = captured.setdefault('text_ids', {})
@@ -812,7 +892,7 @@ class CaptureHooksMixin:
                                           if c.isprintable() and ord(c) < 128).strip()
                             if len(hid) >= 2:
                                 hint_ids.append(hid)
-                        self._apply_hint_tags(captured, hint_ids, log_name=memory_name, complete=True)
+                        self._apply_hint_tags(captured, hint_ids, log_name=memory_name, complete=info_ready)
                     except Exception as e:
                         logger.debug(f"    [HINTS] refresh read failed for '{memory_name}': {e}")
                     try:
@@ -825,7 +905,7 @@ class CaptureHooksMixin:
                     # Flora
                     if hasattr(info, 'Flora'):
                         val = str(info.Flora) or ""
-                        raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        raw = _display_text(val)
                         if raw and raw != "None" and len(raw) >= 2:
                             text_ids['flora'] = raw
                             captured['flora_display'] = self._resolve_adjective(raw, 'flora')
@@ -833,7 +913,7 @@ class CaptureHooksMixin:
                     # Fauna
                     if hasattr(info, 'Fauna'):
                         val = str(info.Fauna) or ""
-                        raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        raw = _display_text(val)
                         if raw and raw != "None" and len(raw) >= 2:
                             text_ids['fauna'] = raw
                             captured['fauna_display'] = self._resolve_adjective(raw, 'fauna')
@@ -843,7 +923,7 @@ class CaptureHooksMixin:
                         sent_arr = info.SentinelsPerDifficulty
                         if hasattr(sent_arr, '__getitem__'):
                             val = str(sent_arr[self._get_difficulty_index()]) or ""
-                            raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                            raw = _display_text(val)
                             self._apply_sentinel_tags(captured, raw)
                             if raw == "None":
                                 captured['sentinel_display'] = "None"   # a sentinel-free planet
@@ -857,7 +937,7 @@ class CaptureHooksMixin:
                     # Weather
                     if hasattr(info, 'Weather'):
                         val = str(info.Weather) or ""
-                        raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        raw = _display_text(val)
                         if raw and raw != "None" and len(raw) >= 2:
                             captured['weather_raw_string'] = raw
                             text_ids['weather'] = raw
@@ -867,12 +947,12 @@ class CaptureHooksMixin:
                     # so this refresh is where the descriptor actually becomes readable.
                     if hasattr(info, 'PlanetDescription'):
                         val = str(info.PlanetDescription) or ""
-                        raw = ''.join(c for c in val if c.isprintable() and ord(c) < 128).strip()
+                        raw = _display_text(val)
                         if raw and raw != "None" and len(raw) >= 2:
                             cls_raw = ""
                             if hasattr(info, 'PlanetType'):
                                 cv = str(info.PlanetType) or ""
-                                cls_raw = ''.join(c for c in cv if c.isprintable() and ord(c) < 128).strip()
+                                cls_raw = _display_text(cv)
                             text_ids['description'] = raw
                             if cls_raw:
                                 text_ids['planet_class'] = cls_raw

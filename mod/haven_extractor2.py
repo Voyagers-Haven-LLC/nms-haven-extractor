@@ -17,8 +17,10 @@ control surface. The env file next to the install root holds the key.
 
 import json
 import logging
+import os
 import queue
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -44,14 +46,17 @@ from state import ExtractorState
 from nmspy_pin import framework_status, framework_needs, embedded_python_exe, pip_upgrade_command
 from readiness import registry_names, unbound_required_hooks
 from payload.sanity import payload_sanity_problems, payload_soft_warnings
+from payload.extraction_core import (system_key, choose_system_name, validated_system_name,
+                                     select_captures)
 from telemetry.events import EventBus
+from telemetry import perf
 from config.env_file import load_env, save_env
 from sync.client import HavenSyncClient, SyncError
 from api_local.server import LocalApi
 
 logger = logging.getLogger("haven_extractor2")
 
-__version__ = "2.2.1"
+__version__ = "2.3.0"
 
 # Required memory hooks — the readiness gate checks these against pyMHF's
 # registry after load (June 16 2026: 'Unable to find offset for
@@ -78,8 +83,8 @@ class HavenPersist(ModState):
     """
     captured_planets: Dict[str, Any] = field(default_factory=dict)
     batch_systems: List[dict] = field(default_factory=list)
-    enqueued_glyphs: Set[str] = field(default_factory=set)
-    refused_glyphs: Set[str] = field(default_factory=set)
+    enqueued_keys: Set[str] = field(default_factory=set)    # 2.3.0: galaxy|glyph keys (was glyph-only)
+    refused_glyphs: Set[str] = field(default_factory=set)   # also galaxy|glyph keys since 2.3.0
     current_system_coords: Optional[dict] = None
     current_system_snapshot: Optional[dict] = None
     snapshot_identity_seed: int = 0
@@ -126,7 +131,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
     # State that survives a pyMHF reload lives on self.persist (see HavenPersist).
     _captured_planets = _persisted("captured_planets")
     _batch_systems = _persisted("batch_systems")
-    _enqueued_glyphs = _persisted("enqueued_glyphs")
+    _enqueued_keys = _persisted("enqueued_keys")
     _refused_glyphs = _persisted("refused_glyphs")
     _current_system_coords = _persisted("current_system_coords")
     _current_system_snapshot = _persisted("current_system_snapshot")
@@ -182,6 +187,9 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         self._game_language = ""           # 2.2.1: eLanguageRegion name ("English", "German"...)
         self._game_thread_id = None        # 2.2.1: set by every hook (they run on the game thread)
         self._capture_enabled = False
+        self._capture_dirty = False         # 2.3.0: set by a real capture; the hook publishes only then
+        self._late_refresh_tries = 0        # 2.3.0: bounded late refresh (capture/hooks_mixin.py)
+        self._late_refresh_last = 0.0
         self._batch_mode_enabled = True     # v1 flag, always on in 2.0
         self._system_saved_to_batch = False
         self._pending_extraction = False
@@ -202,7 +210,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         self.sync = HavenSyncClient(self.env.get("HAVEN_API_URL"),
                                     self.env.get("HAVEN_API_KEY", ""))
         self._hook_last_fire = {}
-        self._enqueued_glyphs = set()
+        self._enqueued_keys = set()
         self._refresh_requested = False
         self._upload_q = queue.Queue()
         self._journal_path = self._output_dir / "staged_queue_v2.jsonl"
@@ -265,6 +273,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         threading.Thread(target=self._command_loop, name="HavenCommands", daemon=True).start()
         threading.Thread(target=self._readiness_check, name="HavenReadiness", daemon=True).start()
         threading.Thread(target=self._settle_loop, name="HavenSettle", daemon=True).start()
+        perf.start_reporter(self._stop)      # 2.3.0: one [PERF] line a minute (telemetry/perf.py)
 
         self._status_display = "Ready (pending hook check)"
         logger.info(f"Haven Extractor v{__version__} loaded — readiness check pending")
@@ -476,27 +485,42 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         """Hooks run on the game thread; remember it so live game calls never come from ours."""
         self._game_thread_id = threading.get_ident()
 
+    # 2.3.0: every hook records its wall time (telemetry/perf.py) so a player's log shows
+    # what the mod cost the game thread - the 2.1.x freeze reports had no such line.
+
     @nms.cGcSolarSystem.Generate.after
     def on_system_generate(self, this, lbUseSettingsFile, lSeed):
+        t0 = time.perf_counter()
         self._note_game_thread()
         self._hook_last_fire["generate"] = time.time()
+        self._late_refresh_tries = 0             # 2.3.0: a new system opens a new late-refresh window
         result = self._on_system_generate_impl(this, lbUseSettingsFile, lSeed)
         try:
             self._drain_batch_to_sync()          # previous system froze on warp
             self._publish_current(warp=True)
         except Exception as e:
             logger.error(f"[2.0] post-warp publish failed: {e}")
+        perf.record("system_generate", time.perf_counter() - t0)
         return result
 
     @nms.cGcPlanetGenerator.GenerateCreatureRoles.after
     def on_creature_roles_generate(self, this, lPlanetData, lUA):
+        t0 = time.perf_counter()
         self._note_game_thread()
         self._hook_last_fire["creature_roles"] = time.time()
         result = self._on_creature_roles_generate_impl(this, lPlanetData, lUA)
+        # 2.3.0: this hook also fires for every neighbouring system the game generates
+        # while the player browses the galaxy map (~60/s). Publishing on each fire rebuilt
+        # the planet list and re-read the game mode twice a second for nothing; now only
+        # a real capture of OUR system (the impl sets _capture_dirty) reaches the website.
         try:
-            self._publish_current()
+            if self._capture_dirty:
+                self._capture_dirty = False
+                self._publish_current()
+                self._maybe_late_refresh("planet")
         except Exception as e:
             logger.debug(f"[2.0] publish failed: {e}")
+        perf.record("creature_roles", time.perf_counter() - t0)
         return result
 
     # 2.1.1: the difficulty preset lives in the save struct, which the game hands
@@ -505,21 +529,30 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
     # game mode still covers reality if a pattern ever fails to resolve.
     @nms.cGcPlayerState.LoadFromData.after
     def on_player_state_loaded(self, this, lData, a3, lbNetworkClientLoad, lbIsLoadingForReset, a6):
+        t0 = time.perf_counter()
+        self._note_game_thread()
         self._hook_last_fire["player_state_load"] = time.time()
         try:
             if self._note_difficulty_state(lData, "LoadFromData"):
                 self._detect_game_mode()
+            self._maybe_late_refresh("load")
         except Exception as e:
             logger.debug(f"[GAME_MODE] LoadFromData hook failed: {e}")
+        perf.record("player_state_load", time.perf_counter() - t0)
 
     @nms.cGcPlayerState.SaveToData.after
     def on_player_state_saved(self, this, lData):
+        t0 = time.perf_counter()
+        self._note_game_thread()
         self._hook_last_fire["player_state_save"] = time.time()
         try:
             if self._note_difficulty_state(lData, "SaveToData"):
                 self._detect_game_mode()
+            # 2.3.0: autosaves are the game-thread moments a half-read system gets re-read
+            self._maybe_late_refresh("autosave")
         except Exception as e:
             logger.debug(f"[GAME_MODE] SaveToData hook failed: {e}")
+        perf.record("player_state_save", time.perf_counter() - t0)
 
     @on_fully_booted
     def on_fully_booted(self):
@@ -533,6 +566,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
 
     @on_state_change("APPVIEW")
     def on_appview(self):
+        t0 = time.perf_counter()
         self._note_game_thread()
         self._hook_last_fire["appview"] = time.time()
         try:
@@ -542,6 +576,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         result = self._on_appview_impl()
         try:
             self._detect_game_mode()             # REVIVED (dead code in 1.x)
+            self._maybe_late_refresh("APPVIEW")  # 2.3.0: a later menu transition re-reads a half-read system
             if self._refresh_requested:
                 self._refresh_requested = False
                 getattr(self, "_lang_live_results", {}).clear()   # re-ask the game (language may have changed)
@@ -551,6 +586,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             self._publish_current()
         except Exception as e:
             logger.error(f"[2.0] appview post-processing failed: {e}")
+        perf.record("appview", time.perf_counter() - t0)
         return result
 
     def _flush_current_system(self, force=False, reason=""):
@@ -617,6 +653,22 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         self.state.update(game_mode=game_mode, reality=reality)
         system = {**{k: v for k, v in snap.items() if not k.startswith('_')},
                   **coords, "game_mode": game_mode or "Unknown", "reality": reality}
+        if coords or snap:
+            # 2.3.0: the live view shows the name the upload will ship - validated, with
+            # the procedural fallback - never a raw control character.
+            proc = ""
+            try:
+                if (coords.get("galaxy_index") is not None and not coords.get("galaxy_unknown")
+                        and not validated_system_name(coords.get("system_name"))
+                        and not validated_system_name(snap.get("system_name"))):
+                    proc = self._generate_system_name(
+                        coords.get("glyph_code", ""), coords["galaxy_index"],
+                        system_idx=coords.get("solar_system_index"), x=coords.get("voxel_x"),
+                        y=coords.get("voxel_y"), z=coords.get("voxel_z"))
+            except Exception as e:
+                logger.debug(f"[2.3] live-view name fallback failed: {e}")
+            system["system_name"] = choose_system_name(coords.get("system_name"), snap.get("system_name"),
+                                                       proc, coords.get("glyph_code", ""))
         if warp:
             name = system.get("system_name") or "…"
             self.state.begin_system(system)
@@ -633,7 +685,9 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             # the website's Current System view disagreed with the pending submission
             # (High/Attentive/Blissful). One builder, one set of words.
             planets = []
-            for idx, p in enumerate(self._captured_planets.values()):
+            # 2.3.0: the same body filter the upload uses (no phantom sixth body in the live view)
+            chosen = select_captures(self._captured_planets, count_hint=snap.get('_planets_count'))
+            for idx, (_key, p) in enumerate(chosen):
                 try:
                     q = self._planet_from_captured(p, idx)
                 except Exception as e:
@@ -669,7 +723,8 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
         from payload.extraction_core import galaxy_is_known
         for entry in list(self._batch_systems):
             glyph = entry.get("glyph_code") or ""
-            if not glyph or glyph in self._enqueued_glyphs:
+            key = system_key(entry)                  # 2.3.0: galaxy + glyph, not glyph alone
+            if not glyph or key in self._enqueued_keys:
                 continue
             if glyph == "000000000000":
                 self.events.emit("HEALTH", f"Dropped capture with null glyph "
@@ -685,7 +740,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                                  f"HELD: galaxy unresolved for "
                                  f"{entry.get('system_name') or glyph} — warp out "
                                  f"and back in to fix, it will stage automatically.",
-                                 level="warning", coalesce_key=f"held-{glyph}")
+                                 level="warning", coalesce_key=f"held-{key}")
                 continue
             # 2.1.0 framework hold: with a mismatched nmspy every struct read is
             # suspect, so nothing leaves this machine until the launcher fixes it.
@@ -702,8 +757,8 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             # uploading plausible garbage (the whole point of dropping hand offsets).
             problems = payload_sanity_problems(entry)
             if problems:
-                if glyph not in self._refused_glyphs:
-                    self._refused_glyphs.add(glyph)
+                if key not in self._refused_glyphs:
+                    self._refused_glyphs.add(key)
                     self.state.update(refused_count=len(self._refused_glyphs))
                     logger.error(f"[SANITY] REFUSED {glyph}: {problems}")
                     self.events.emit("HEALTH",
@@ -712,7 +767,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                                      f"{' …' if len(problems) > 4 else ''}. This looks like "
                                      f"a struct misread (game/framework layout changed) — "
                                      f"update the extractor via RUN_HAVEN_EXTRACTOR.bat.",
-                                     level="error", coalesce_key=f"refused-{glyph}")
+                                     level="error", coalesce_key=f"refused-{key}")
                 continue
             soft = payload_soft_warnings(entry)
             if soft:
@@ -721,16 +776,16 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                                  f"{len(soft)} planet field(s) read as raw enum "
                                  f"({soft[0]}{' …' if len(soft) > 1 else ''}) — staged, "
                                  f"flagged for review.",
-                                 level="warning", coalesce_key=f"soft-{glyph}")
+                                 level="warning", coalesce_key=f"soft-{key}")
             payload = dict(entry)
             if game_mode:
                 payload["game_mode"] = game_mode   # omitted while unread — never claims Normal
             payload["reality"] = reality
             payload["extractor_version"] = __version__
-            self._enqueued_glyphs.add(glyph)
+            self._enqueued_keys.add(key)
             self._journal_append(payload)
             self._upload_q.put(payload)
-            self.state.update(batch_count=len(self._enqueued_glyphs))
+            self.state.update(batch_count=len(self._enqueued_keys))
             self.state.finish_system(staged=False)  # staged flips true on sync OK
 
     def _uploader_loop(self):
@@ -765,7 +820,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                 payload["game_language"] = self._game_language
             try:
                 result = self.sync.stage(payload)
-                self._journal_remove(payload.get("glyph_code"))
+                self._journal_remove(system_key(payload))
                 self.state.update(last_sync_at=datetime.now(timezone.utc).isoformat())
                 self.state.finish_system(staged=True)
                 dd = result.get("dedup_status")
@@ -793,7 +848,10 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
             except OSError as e:
                 logger.warning(f"journal append failed: {e}")
 
-    def _journal_remove(self, glyph):
+    def _journal_remove(self, key):
+        """Drop the sent capture (by galaxy|glyph key) from the journal. 2.3.0: the rewrite
+        goes through a temp file + os.replace, so a crash mid-write can no longer leave a
+        truncated journal (the old open('w') emptied the file before writing it back)."""
         with self._journal_lock:
             try:
                 if not self._journal_path.exists():
@@ -802,12 +860,21 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                 with open(self._journal_path, "r", encoding="utf-8") as f:
                     for line in f:
                         try:
-                            if json.loads(line).get("glyph_code") != glyph:
+                            if system_key(json.loads(line)) != key:
                                 kept.append(line)
-                        except json.JSONDecodeError:
+                        except (json.JSONDecodeError, AttributeError):
                             continue
-                with open(self._journal_path, "w", encoding="utf-8") as f:
-                    f.writelines(kept)
+                fd, tmp = tempfile.mkstemp(prefix=self._journal_path.name + ".",
+                                           suffix=".tmp", dir=self._journal_path.parent)
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.writelines(kept)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp, self._journal_path)
+                finally:
+                    if os.path.exists(tmp):
+                        os.unlink(tmp)
             except OSError as e:
                 logger.warning(f"journal rewrite failed: {e}")
 
@@ -822,13 +889,15 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                         payload = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    glyph = payload.get("glyph_code")
-                    if glyph and glyph not in self._enqueued_glyphs:
-                        self._enqueued_glyphs.add(glyph)
+                    if not isinstance(payload, dict) or not payload.get("glyph_code"):
+                        continue
+                    key = system_key(payload)
+                    if key not in self._enqueued_keys:
+                        self._enqueued_keys.add(key)
                         self._upload_q.put(payload)
                         count += 1
             if count:
-                self.state.update(batch_count=len(self._enqueued_glyphs))
+                self.state.update(batch_count=len(self._enqueued_keys))
                 self.events.emit("SYNC", f"Recovered {count} unsent capture(s) from the "
                                          f"journal (previous session)")
         except OSError as e:
@@ -907,7 +976,7 @@ class HavenExtractor2(Mod, CaptureHooksMixin, SystemReadMixin, MemoryMixin,
                     except queue.Empty:
                         pass
                     self._batch_systems[:] = []
-                    self._enqueued_glyphs.clear()
+                    self._enqueued_keys.clear()
                     with self._journal_lock:
                         try:
                             self._journal_path.unlink(missing_ok=True)

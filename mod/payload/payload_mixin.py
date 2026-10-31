@@ -13,7 +13,7 @@ from typing import Optional, Set, List, Dict
 logger = logging.getLogger("haven_extractor2")
 
 from payload.extraction_core import (build_planet_entry, build_planet_list,
-    build_system_payload, galaxy_is_known)
+    build_system_payload, galaxy_is_known, system_key)
 from payload.tables import (translate_resource, clean_weather_string,
     HIDDEN_SUBSTANCE_IDS, HIDDEN_SUBSTANCE_NAMES)
 
@@ -80,10 +80,15 @@ class PayloadMixin:
                 now_ts=int(datetime.now().timestamp()),
             )
 
-            # Dedup by glyph. force_update replaces the existing frozen entry in place.
+            # Dedup by galaxy + glyph (2.3.0: the same address exists in every galaxy; a
+            # glyph-only match skipped the second galaxy's system). A frozen entry whose
+            # galaxy was still unknown matches by glyph alone so it can be upgraded.
+            # force_update replaces the existing frozen entry in place.
             existing_index = None
+            new_key = system_key(system_data)
             for i, existing in enumerate(self._batch_systems):
-                if existing.get('glyph_code') == glyph_code:
+                same_glyph = str(existing.get('glyph_code') or '').upper() == str(glyph_code).upper()
+                if system_key(existing) == new_key or (same_glyph and not galaxy_is_known(existing)):
                     existing_index = i
                     break
 

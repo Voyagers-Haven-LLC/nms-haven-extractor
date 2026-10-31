@@ -25,7 +25,7 @@ logger = logging.getLogger("haven_extractor2")
 
 from resolve.galaxydata import GALAXY_NAMES, get_galaxy_name  # noqa: F401
 from capture.offsets import *  # noqa: F401,F403
-from payload.extraction_core import decide_galaxy
+from payload.extraction_core import decide_galaxy, validated_system_name
 from capture.namegen_probe import (NMS_NAMEGEN_AVAILABLE, nms_system_name,
     nms_region_name)
 
@@ -348,8 +348,8 @@ class ResolveMixin:
         actual = self._get_actual_system_name()
         if galaxy_idx is None:
             return (actual or f"System_{glyph_code}", "")
-        system_name = actual or self._generate_system_name(
-            glyph_code, galaxy_idx, system_idx=system_idx, x=x, y=y, z=z)
+        system_name = actual or validated_system_name(self._generate_system_name(
+            glyph_code, galaxy_idx, system_idx=system_idx, x=x, y=y, z=z)) or f"System_{glyph_code}"
         region_name = self._generate_region_name(
             glyph_code, galaxy_idx, system_idx=system_idx, x=x, y=y, z=z)
         return (system_name, region_name)
@@ -438,39 +438,44 @@ class ResolveMixin:
         return portal_code
 
     def _get_actual_system_name(self) -> str:
-        """Get the actual in-game system name from solar system data.
+        """The in-game (player-renamed) system name, or '' for a procedurally named system.
 
-        Reads directly from cGcSolarSystemData.Name at offset 0x2274.
-        Note: This field may be empty during planet generation and
-        only gets populated later. Call this during export, not capture.
-
-        Returns:
-            System name string, or empty string if not found
+        2.3.0: read through the generated struct (cGcSolarSystem.mSolarSystemData.Name),
+        the last hand-maintained offset in the mod. The old ``solar_system + 0x2274``
+        read returned a lone control character (U+0006) on a Budullangr visit; it was
+        truthy, so it overrode the procedural name, and 466 live systems ended up named
+        '\\x0e' and the like. Two guards now: the live object must still be OUR system
+        (its seed matches the snapshot's identity seed - NMS recycles this object for
+        every system it generates, including neighbours browsed on the galaxy map), and
+        the value must validate whole (every character printable).
         """
-        # Try reading from cached solar system's Name field
-        if self._cached_solar_system:
-            try:
-                solar_sys_addr = get_addressof(self._cached_solar_system)
-                # Name is at offset 0x2274 from solar system start
-                name_addr = solar_sys_addr + 0x2274
-
-                # Read 128 bytes (cTkFixedString<0x80>)
-                buffer = (ctypes.c_char * 128)()
-                ctypes.memmove(buffer, name_addr, 128)
-                raw = bytes(buffer)
-
-                # Find null terminator
-                null_idx = raw.find(b'\x00')
-                if null_idx > 0:
-                    name = raw[:null_idx].decode('utf-8', errors='ignore').strip()
-                    if name:
-                        logger.info(f"  [SYSNAME] Got: '{name}'")
-                        return name
-
-            except Exception as e:
-                logger.debug(f"  [SYSNAME] Read failed: {e}")
-
-        return ""
+        solar_system = self._cached_solar_system
+        if solar_system is None:
+            return ""
+        try:
+            sd = solar_system.mSolarSystemData
+            identity = getattr(self, "_snapshot_identity_seed", 0)
+            if identity:
+                try:
+                    seed = int(sd.Seed.Seed)
+                except Exception:
+                    return ""          # cannot prove this object is still our system
+                if seed != identity:
+                    logger.debug(f"  [SYSNAME] skipped: live seed {seed:#x} != current {identity:#x}")
+                    return ""
+            raw = getattr(sd, "Name", None)
+            if raw is None:
+                return ""
+            text = str(raw).split("\x00", 1)[0]
+            name = validated_system_name(text)
+            if name:
+                logger.info(f"  [SYSNAME] Got: '{name}'")
+            elif text:
+                logger.warning(f"  [SYSNAME] rejected non-printable Name {text!r} - using the procedural name")
+            return name
+        except Exception as e:
+            logger.debug(f"  [SYSNAME] typed Name unavailable: {e}")
+            return ""
 
     def _generate_system_name(self, glyph_code: str, galaxy_idx: int = 0,
                                system_idx: int = None, x: int = None, y: int = None, z: int = None) -> str:

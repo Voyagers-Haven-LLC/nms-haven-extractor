@@ -23,7 +23,7 @@ class ExtractorState:
         # Health (populated by capture/ at load; by the simulator in dev)
         self.mods_expected = 1
         self.mods_loaded = 0
-        self.hooks_expected = 3   # len(REQUIRED_HOOKS) in haven_extractor2 (was 4 — a stale count)
+        self.hooks_expected = 2   # len(REQUIRED_HOOKS) in haven_extractor2 (the mod sets the real value at load)
         self.hooks_bound = 0
         self.deps_ok = True
         self.deps_detail = {}
