@@ -11,9 +11,11 @@ import logging
 import urllib.error
 import urllib.request
 
+from sync import tls   # 2.3.1: the Windows store plus certifi's bundle, one context
+
 logger = logging.getLogger('haven_extractor.sync')
 
-USER_AGENT_VERSION = '2.3.0'  # stamped by build_release.py alongside __version__
+USER_AGENT_VERSION = '2.3.1'  # stamped by build_release.py alongside __version__
 
 
 class SyncError(Exception):
@@ -40,8 +42,10 @@ class HavenSyncClient:
         if use_key and self.api_key:
             req.add_header('X-API-Key', self.api_key)
         try:
-            # No custom SSL context: certifi-backed default verification.
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            # 2.3.1: the Windows store PLUS certifi's bundle (sync/tls.py). Until now this
+            # was the plain default, i.e. the Windows store alone, which on a PC with a
+            # stale store failed with "certificate has expired" against a valid site.
+            with urllib.request.urlopen(req, timeout=timeout, context=tls.context()) as resp:
                 return json.loads(resp.read().decode('utf-8') or '{}')
         except urllib.error.HTTPError as e:
             detail = None
@@ -51,7 +55,7 @@ class HavenSyncClient:
                 pass
             raise SyncError(detail or f"HTTP {e.code}", status=e.code, detail=detail)
         except urllib.error.URLError as e:
-            raise SyncError(f"Cannot reach Haven: {e.reason}")
+            raise SyncError(f"Cannot reach Haven: {tls.explain(e)}")
         except Exception as e:
             raise SyncError(str(e))
 

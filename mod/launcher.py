@@ -52,11 +52,21 @@ def vtuple(v: str):
         return (0, 0, 0)
 
 
+def _tls_context():
+    """2.3.1: the Windows store plus certifi's bundle (mod/sync/tls.py); the plain default
+    if that module is missing (an old install updating itself)."""
+    try:
+        from sync import tls
+        return tls.context()
+    except Exception:
+        return None
+
+
 def fetch_latest(api_url: str):
     req = urllib.request.Request(
         f"{api_url.rstrip('/')}/api/extractor/latest",
         headers={"User-Agent": "HavenExtractor-Launcher"})
-    with urllib.request.urlopen(req, timeout=8) as resp:
+    with urllib.request.urlopen(req, timeout=8, context=_tls_context()) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -64,7 +74,9 @@ def apply_update(zip_url: str, version: str) -> bool:
     print(f"  downloading v{version} ...")
     tmp = Path(tempfile.mkstemp(suffix=".zip")[1])
     try:
-        urllib.request.urlretrieve(zip_url, tmp)
+        req = urllib.request.Request(zip_url, headers={"User-Agent": "HavenExtractor-Launcher"})
+        with urllib.request.urlopen(req, timeout=60, context=_tls_context()) as resp, open(tmp, "wb") as out:
+            shutil.copyfileobj(resp, out)
         if tmp.stat().st_size < 10_000:
             print("  download looks wrong (too small) — skipping update")
             return False
